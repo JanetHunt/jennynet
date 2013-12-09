@@ -7,8 +7,7 @@ import java.nio.charset.UnsupportedCharsetException;
 
 import org.jhunt.jennynet.intfa.ISerialization;
 
-
-/** Class for global setting for the JennyNet networking service.
+/** Class for global settings for the JennyNet networking service.
  * 
  * @author janet hunt
  *
@@ -25,38 +24,29 @@ public class JennyNet {
    public static final int MAX_SERIALBUFFER_SIZE = 10000000; // 10 MB
    public static final int DEFAULT_SERIALISATION = 0; // code number KRYO
    public static final int MAX_TRANSMISSION_PARCEL_SIZE = 1024*128; 
+   public static final int MIN_TRANSMISSION_PARCEL_SIZE = 1024; 
    public static final int DEFAULT_TRANSMISSION_PARCEL_SIZE = 1024*8;
    public static final int DEFAULT_ALIVE_TIMEOUT = 20000;
-   private static final int DEFAULT_CONFIRM_TIMEOUT = 10000; 
+   public static final int DEFAULT_CONFIRM_TIMEOUT = 10000; 
    
-   private static int baseThreadPriority = Thread.NORM_PRIORITY;
-   private static int transmitThreadPriority = Thread.MAX_PRIORITY;
-   private static int objectQueueCapacity =  DEFAULT_QUEUE_CAPACITY;
-   private static int parcelQueueCapacity = DEFAULT_QUEUE_CAPACITY;
-   private static int transmissionParcelSize = DEFAULT_TRANSMISSION_PARCEL_SIZE;
-   
-   private static File defaultTempDirectory = new File(System.getProperty("java.io.tmpdir"));
-   private static File defaultFileRootDirectory = null;  // defaults to null
    private static ISerialization globalSerialisation = new KryoSerialisation();
-   private static Charset codingCharset;
+   private static Charset defaultCodingCharset;
 
-   private static int alive_timeout = DEFAULT_ALIVE_TIMEOUT;
-   private static int alive_period;  // set by system
-   private static int confirm_timeout = DEFAULT_CONFIRM_TIMEOUT;
-   
-
+   /** The layer parameters in a shell. Carries default values if not modified by
+    * the application. */
+   private static ConnectionParameters parameters;
    
    static {
       // create the coding charset (does not affect object serialisation methods)
-      try { codingCharset = Charset.forName("utf-8"); 
+      try { defaultCodingCharset = Charset.forName("utf-8"); 
       } catch (UnsupportedCharsetException e) {
-         codingCharset = Charset.defaultCharset();
+         defaultCodingCharset = Charset.defaultCharset();
       }
       // default initialise values
-      set_Alive_Period();
+      parameters = new ConnectionParameters();
       
       // default initialise some serialisable classes
-      defaultInitSerialisation();
+      defaultInitSerialisation(globalSerialisation);
    }
    
    
@@ -81,18 +71,12 @@ public class JennyNet {
     * @see #setTransmitThreadPriority(int)
     */
    public static void setBaseThreadPriority (int p) {
-      if (p >= Thread.MIN_PRIORITY & p <= Thread.MAX_PRIORITY) {
-         baseThreadPriority = p;
-         transmitThreadPriority = Math.max(baseThreadPriority, transmitThreadPriority);
-      } else {
-         throw new IllegalArgumentException("illegal priority value: ".
-               concat(String.valueOf(p)));
-      }
+      parameters.setBaseThreadPriority(p);
    }
    
-   private static void defaultInitSerialisation() {
-      globalSerialisation.registerClassForTransmission(String.class);      
-      globalSerialisation.registerClassForTransmission(JennyNetByteBuffer.class);      
+   private static void defaultInitSerialisation(ISerialization ser) {
+      ser.registerClassForTransmission(String.class);      
+      ser.registerClassForTransmission(JennyNetByteBuffer.class);      
    }
 
    /** Sets thread priority (TRANSMIT_THREAD_PRIORITY) of the core data
@@ -111,13 +95,7 @@ public class JennyNet {
     * @see #setBaseThreadPriority(int)
     */
    public static void setTransmitThreadPriority (int p) {
-      if (p >= Thread.MIN_PRIORITY & p <= Thread.MAX_PRIORITY
-          & p >= baseThreadPriority) {
-         transmitThreadPriority = p;
-      } else {
-         throw new IllegalArgumentException("illegal priority value: ".
-               concat(String.valueOf(p)));
-      }
+      parameters.setTransmitThreadPriority(p);
    }
 
    
@@ -129,7 +107,8 @@ public class JennyNet {
     *  @return int thread priority
     */
    public static int getBaseThreadPriority() {
-      return baseThreadPriority;
+      return parameters == null ? Thread.NORM_PRIORITY 
+            : parameters.getBaseThreadPriority();
    }
 
    /** Returns the thread priority of the core data transmission threads
@@ -139,13 +118,16 @@ public class JennyNet {
     *  @return int thread priority
     */
    public static int getTransmitThreadPriority() {
-      return transmitThreadPriority;
+      return parameters == null ? Thread.MAX_PRIORITY 
+            : parameters.getTransmitThreadPriority();
    }
 
    /** Returns the global Serialisation object.
     * This object is per default valid for all newly created connections.
-    * With this instance Object registrations can be performed on
-    * a global level.   
+    * On the returned instance transmittable class registration for object
+    * serialisation can be performed on a global level, while still
+    * additions and subtractions can be performed on particular
+    * connections after their creation.   
     * 
     * @return <code>Serialization</code>
     */
@@ -159,10 +141,8 @@ public class JennyNet {
     * @param cap int maximum number of objects in queue
     * @throws IllegalArgumentException if value is below 1
     */
-   public static void setObjectQueueCapacity (int cap) {
-      if (cap < 1)
-         throw new IllegalArgumentException("illegal capacity; minimum = 1");
-      objectQueueCapacity = Math.max(cap, 1);
+   public static void setObjectQueueCapacity (int capacity) {
+      parameters.setObjectQueueCapacity(capacity);
    }
    
    /** Returns the queue capacity for sending objects over
@@ -173,14 +153,14 @@ public class JennyNet {
     * @return int max. number of objects in queue
     */
    public static int getObjectQueueCapacity() {
-      return objectQueueCapacity;
+      return parameters == null ? DEFAULT_QUEUE_CAPACITY 
+            : parameters.getObjectQueueCapacity();
    }
 
    
    /**
     * @param args
    public static void main(String[] args) {
-      // TODO Auto-generated method stub
 
    }
     */
@@ -192,7 +172,8 @@ public class JennyNet {
     * @return int maximum data size of a transmission parcel 
     */
    public static int getTransmissionParcelSize() {
-      return transmissionParcelSize;
+      return parameters == null ? DEFAULT_TRANSMISSION_PARCEL_SIZE 
+            : parameters.getTransmissionParcelSize();
    }
 
    /** Sets the global value for TRANSMISSION_PARCEL_SIZE.
@@ -204,76 +185,90 @@ public class JennyNet {
     * @param size int maximum capacity of transmission parcels (bytes)
     */
    public static void setTransmissionParcelSize (int size) {
-      transmissionParcelSize = Math.min( Math.max(size, 1024), MAX_TRANSMISSION_PARCEL_SIZE );
+      parameters.setTransmissionParcelSize(size);
    }
 
    /** The charset used for layer internal use.
     * (Does not reflect object serialisation methods!)
     * 
-    * @return Charset string coding charset
+    * @return Charset text coding charset
     */
    public static Charset getCodingCharset() {
-      return codingCharset;
+      return parameters == null ? defaultCodingCharset
+            : parameters.getCodingCharset();
    }
 
+   /** Sets the charset used for layer internal text encoding.
+    * (Does not affect object serialisation methods!)
+    * 
+    * @param charset Charset
+    */
+   public static void setCodingCharset (Charset charset) {
+      parameters.setCodingCharset(charset);
+   }
+   
    /** Returns the code number of the default serialisation method 
     * applied by this layer.
     * 
     * @return int method code
     */
    public static int getDefaultSerialisationMethod() {
-      return DEFAULT_SERIALISATION;
+      return parameters == null ? DEFAULT_SERIALISATION
+            : parameters.getSerialisationMethod();
    }
 
-   /** Returns the directory definition for the layer's default TEMP directory.
+   /** Sets the code number of the default serialisation method of this layer.
+    * (Currently ignored.)
     * 
-    * @return File TEMP directory
+    * @param method int method code
     */
-   public static File getDefaultTempDirectory() {
-      return defaultTempDirectory;
+   public static void setDefaultSerialisationMethod (int method) {
+      parameters.setSerialisationMethod(method);
    }
-
-   /** Sets the directory definition for the layer's default TEMP directory.
-    * 
-    * @param dir File TEMP directory
-    * @throws IllegalArgumentException if parameter is null or not a directory
-    */
-   public static void setDefaultTempDirectory (File dir) {
-      if (dir == null)
-         throw new IllegalArgumentException("dir == null");
-      if (!dir.isDirectory())
-         throw new IllegalArgumentException("parameter is not a directory");
-
-      defaultTempDirectory = dir;
-   }
-
-   /** Returns the layer's default root directory for incoming file transmissions.
-    * Defaults to null. Null implies that received file transmissions will be 
-    * stored and reflected as temporary files only.
+   
+   /** Returns the layer's default TEMP directory.
     * 
     * @return File directory
     */
-   public static File getDefaultTransmissionRoot() {
-      return defaultFileRootDirectory;
+   public static File getDefaultTempDirectory() {
+      return parameters == null ? new File(System.getProperty("java.io.tmpdir"))
+            : parameters.getTempDirectory();
    }
-   
-   /** Sets the layer's default root directory for incoming file transmissions.
-    * Null implies that received file transmissions will be stored and reflected 
-    * as temporary files only. Otherwise an attempt is made to store incoming files
-    * under their given paths in the root directory.
+
+   /** Sets the directory for the layer's default TEMP directory.
     * 
-    * @param dir File directory (must exist)
+    * @param dir File TEMP directory
     * @throws IOException 
     * @throws IllegalArgumentException if parameter is null or not a directory
     * @throws IOException if the path cannot get verified (canonical name)
     */
+   public static void setDefaultTempDirectory (File dir) throws IOException {
+      parameters.setTempDirectory(dir);
+   }
+
+   /** Returns the layer's default root directory (TRANSFER_ROOT_PATH) for 
+    * incoming file transmissions.
+    * Defaults to null. Null implies that received file transmissions will be 
+    * stored and reflected as temporary files only. For mechanics of file
+    * transfers see user manual.
+    * 
+    * @return File directory
+    */
+   public static File getDefaultTransmissionRoot () {
+      return parameters == null ? null : parameters.getFileRootDir();
+   }
+   
+   /** Sets the layer's default root directory (TRANSFER_ROOT_PATH) for incoming 
+    * file transmissions.
+    * Null implies that received file transmissions will be stored and reflected 
+    * as temporary files only. For mechanics of file transfers see user manual.
+    * 
+    * @param dir File directory (if not null it must exist)
+    * @throws IllegalArgumentException if parameter is not a directory
+    * @throws IOException if the path cannot be verified (canonical name)
+    */
    public static void setDefaultTransmissionRoot (File dir) throws IOException {
-      if (dir == null)
-         throw new IllegalArgumentException("dir == null");
-      if (!dir.isDirectory())
-         throw new IllegalArgumentException("parameter is not a directory");
-      
-      defaultFileRootDirectory = dir.getCanonicalFile();
+      parameters.setFileRootDir(dir);
    }
 
    /** Returns the global setting for the capacity of queues handling with data parcels.
@@ -282,18 +277,17 @@ public class JennyNet {
     * @return int max. number of parcels in a queue
     */
    public static int getParcelQueueCapacity () {
-      return parcelQueueCapacity;
+      return parameters == null ? DEFAULT_QUEUE_CAPACITY 
+            : parameters.getParcelQueueCapacity();
    }
    
    /** Sets the global value for the capacity of queues handling with data parcels.
     * 
-    * @param c int maximum number of parcels (10 .. 10000)
+    * @param capacity int maximum number of parcels (10 .. 10000)
     * @throws IllegalArgumentException if parameter is out of range 
     */
-   public static void setParcelQueueCapacity (int c) {
-      if (c < 10 | c > 10000) 
-         throw new IllegalArgumentException("queue capacity out of range (10..10,000)");
-      parcelQueueCapacity = c;
+   public static void setParcelQueueCapacity (int capacity) {
+      parameters.setParcelQueueCapacity(capacity);
    }
 
    
@@ -306,8 +300,9 @@ public class JennyNet {
     * @param timeout int milliseconds (minimum 500)
     */
    public static int getAlive_Period () {
-      return alive_period;
+      return parameters.getAlivePeriod();
    }
+   
    /** The current value of global parameter ALIVE_TIMEOUT.
     * Value determines the maximum time since the last network activity
     * of a socket until the remote station is categorised as DEAD and
@@ -317,7 +312,8 @@ public class JennyNet {
     * @return int timeout in milliseconds
     */
    public static int getAlive_timeout () {
-      return alive_timeout;
+      return parameters == null ? DEFAULT_ALIVE_TIMEOUT 
+            : parameters.getAliveTimeout();
    }
 
    /** Sets the value of global parameter ALIVE_TIMEOUT.
@@ -329,13 +325,7 @@ public class JennyNet {
     * @throws IllegalArgumentException if parameter is below 1000 
     */
    public static void setAlive_timeout (int timeout) {
-      if (timeout < 1000) 
-         throw new IllegalArgumentException("timeout minimum = 1000");
-      if (timeout - confirm_timeout/2 < 500) 
-         throw new IllegalArgumentException("illegal ALIVE value: " + timeout + "; results in ALIVE_PERIOD below 500");
-      
-      JennyNet.alive_timeout = timeout;
-      set_Alive_Period();
+      parameters.setAliveTimeout(timeout);
    }
 
    /** The value of global parameter CONFIRM_TIMEOUT.
@@ -347,7 +337,8 @@ public class JennyNet {
     * @return int timeout in milliseconds
     */  
    public static int getConfirm_timeout () {
-      return confirm_timeout;
+      return parameters == null ? DEFAULT_CONFIRM_TIMEOUT 
+            : parameters.getConfirmTimeout();
    }
 
    /** Sets the value of global parameter CONFIRM_TIMEOUT.
@@ -359,19 +350,7 @@ public class JennyNet {
     * @throws IllegalArgumentException if parameter is below 1000 
     */
    public static void setConfirm_timeout (int timeout) {
-      if (timeout < 1000) 
-         throw new IllegalArgumentException("timeout minimum = 1000");
-      if (alive_timeout - timeout/2 < 500) 
-         throw new IllegalArgumentException("illegal CONFIRM value: " + timeout + "; results in ALIVE_PERIOD below 500");
-      
-      JennyNet.confirm_timeout = timeout;
-      set_Alive_Period();
+      parameters.setConfirmTimeout(timeout);
    }
 
-   /** Sets value of ALIVE_PERIOD in dependence of ALIVE_TIMEOUT and
-    * CONFIRM_TIMEOUT.
-    */
-   private static void set_Alive_Period () {
-      alive_period = alive_timeout - confirm_timeout/2;
-   }
 }
