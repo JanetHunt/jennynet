@@ -2,20 +2,20 @@ package org.jhunt.jennynet.core;
 
 import java.util.LinkedHashMap;
 
-import org.jhunt.jennynet.intfa.ISerialization;
+import org.jhunt.jennynet.intfa.Serialization;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 
-public class KryoSerialisation implements Cloneable, ISerialization {
+public class KryoSerialisation implements Cloneable, Serialization {
    private static final int METHOD_ID = 0;
    
    private LinkedHashMap<Class, Class> classMap = new LinkedHashMap<Class, Class>();
    private Kryo kryo = new Kryo();
    
    @Override
-   public ISerialization copy() {
+   public Serialization copy() {
       KryoSerialisation c = null;
       try { 
          // make a deep clone of this serialisation object

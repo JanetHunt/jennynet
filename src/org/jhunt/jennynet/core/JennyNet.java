@@ -1,11 +1,18 @@
 package org.jhunt.jennynet.core;
 
+import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
+import java.net.Socket;
+import java.net.SocketException;
 import java.nio.charset.Charset;
 import java.nio.charset.UnsupportedCharsetException;
+import java.util.Timer;
+import java.util.TimerTask;
 
-import org.jhunt.jennynet.intfa.ISerialization;
+import org.jhunt.jennynet.intfa.Serialization;
+import org.jhunt.jennynet.util.Util;
 
 /** Class for global settings for the JennyNet networking service.
  * 
@@ -16,20 +23,23 @@ import org.jhunt.jennynet.intfa.ISerialization;
 public class JennyNet {
 
    public static final int PARCEL_MARKER = 0xe40dd5a8;
+   public static final byte[] LAYER_HANDSHAKE = Util.hexToBytes("83BFAA19D69E9976D845D09684D2CAEC");
    /** Buffer size for file IO streams. */
    public static final int STREAM_BUFFER_SIZE = 64000;
    public static final int DEFAULT_QUEUE_CAPACITY = 200;
+   public static final int SOCKET_TIMEOUT = 500;
 
    /** Maximum buffer size for object serialisation. */
    public static final int MAX_SERIALBUFFER_SIZE = 10000000; // 10 MB
    public static final int DEFAULT_SERIALISATION = 0; // code number KRYO
    public static final int MAX_TRANSMISSION_PARCEL_SIZE = 1024*128; 
    public static final int MIN_TRANSMISSION_PARCEL_SIZE = 1024; 
-   public static final int DEFAULT_TRANSMISSION_PARCEL_SIZE = 1024*8;
+   public static final int DEFAULT_TRANSMISSION_PARCEL_SIZE = 1024*16;
    public static final int DEFAULT_ALIVE_TIMEOUT = 20000;
+   public static final int DEFAULT_ALIVE_PERIOD = 15000;
    public static final int DEFAULT_CONFIRM_TIMEOUT = 10000; 
    
-   private static ISerialization globalSerialisation = new KryoSerialisation();
+   private static Serialization globalSerialisation = new KryoSerialisation();
    private static Charset defaultCodingCharset;
 
    /** The layer parameters in a shell. Carries default values if not modified by
@@ -74,7 +84,7 @@ public class JennyNet {
       parameters.setBaseThreadPriority(p);
    }
    
-   private static void defaultInitSerialisation(ISerialization ser) {
+   private static void defaultInitSerialisation(Serialization ser) {
       ser.registerClassForTransmission(String.class);      
       ser.registerClassForTransmission(JennyNetByteBuffer.class);      
    }
@@ -131,7 +141,7 @@ public class JennyNet {
     * 
     * @return <code>Serialization</code>
     */
-   public static ISerialization getGlobalSerialisation () {
+   public static Serialization getGlobalSerialisation () {
       return globalSerialisation;
    }
 
@@ -291,18 +301,6 @@ public class JennyNet {
    }
 
    
-   /** The current value of global parameter ALIVE_PERIOD.
-    * This value determines the period for a connection to dispatch
-    * ALIVE signals to remote to indicate that it is still alive.
-    * ALIVE signals are only dispatched when no other network activity
-    * is ongoing for that connection.
-    * 
-    * @param timeout int milliseconds (minimum 500)
-    */
-   public static int getAlive_Period () {
-      return parameters.getAlivePeriod();
-   }
-   
    /** The current value of global parameter ALIVE_TIMEOUT.
     * Value determines the maximum time since the last network activity
     * of a socket until the remote station is categorised as DEAD and
@@ -311,7 +309,7 @@ public class JennyNet {
     *  
     * @return int timeout in milliseconds
     */
-   public static int getAlive_timeout () {
+   public static int getAliveTimeout () {
       return parameters == null ? DEFAULT_ALIVE_TIMEOUT 
             : parameters.getAliveTimeout();
    }
@@ -324,8 +322,32 @@ public class JennyNet {
     * @param timeout int milliseconds (minimum 1000)
     * @throws IllegalArgumentException if parameter is below 1000 
     */
-   public static void setAlive_timeout (int timeout) {
+   public static void setAliveTimeout (int timeout) {
       parameters.setAliveTimeout(timeout);
+   }
+
+   /** The current value of global parameter ALIVE_PERIOD.
+    * This value determines the period for a connection to dispatch
+    * ALIVE signals to remote to indicate that it is still alive.
+    * Defaults to 15000.
+    * 
+    * @param timeout int milliseconds (minimum 500)
+    */
+   public static int getAlivePeriod () {
+      
+      return parameters == null ? DEFAULT_ALIVE_PERIOD : parameters.getAlivePeriod();
+   }
+   
+   /** Sets the value of ALIVE_PERIOD.
+    * This value defines the period in which ALIVE signals will 
+    * be sent to the remote station of a connection if no other 
+    * outgoing network activity occurs.
+    *  
+    * @param timeout int milliseconds (minimum 1000)
+    * @throws IllegalArgumentException if parameter is below 1000 
+    */
+   public static void setAlivePeriod (int period) {
+      parameters.setAlivePeriod(period);
    }
 
    /** The value of global parameter CONFIRM_TIMEOUT.
@@ -336,7 +358,7 @@ public class JennyNet {
     * 
     * @return int timeout in milliseconds
     */  
-   public static int getConfirm_timeout () {
+   public static int getConfirmTimeout () {
       return parameters == null ? DEFAULT_CONFIRM_TIMEOUT 
             : parameters.getConfirmTimeout();
    }
@@ -352,5 +374,100 @@ public class JennyNet {
    public static void setConfirm_timeout (int timeout) {
       parameters.setConfirmTimeout(timeout);
    }
+
+   /** The value of global parameter SEND_ALIVE_SIGNALS.
+    * This determines whether a connection will send ALIVE signals 
+    * to remote station in a cyclic pattern in order to indicate 
+    * it is operational.
+    * 
+    * @return boolean true == sending ALIVE signals
+    */
+   public static boolean getSendAliveSignals() {
+      return parameters == null ? true 
+            : parameters.getSendAliveSignals();
+   }
+
+   /** The value of global parameter CHECK_ALIVE_SIGNALS.
+    * This determines whether a connection will check for ALIVE signals 
+    * sent from remote station in a cyclic pattern. A failing check will 
+    * cause the connection to close.
+    * 
+    * @return boolean true == checking for ALIVE from remote
+    */
+   public static boolean getCheckAliveSignals() {
+      return parameters == null ? true 
+            : parameters.getCheckAliveSignals();
+   }
+
+   /** Sets the value of global parameter SEND_ALIVE_SIGNALS.
+    * This determines whether a connection will send ALIVE signals 
+    * to remote station in a cyclic pattern in order to indicate 
+    * it is operational.
+    * 
+    * @param value boolean true == sending periodic ALIVE signals
+    */
+   public static void setSendAliveSignals (boolean value) {
+      parameters.setSendAliveSignals(value);
+   }
+
+   /** Sets the value of global parameter CHECK_ALIVE_SIGNALS.
+    * This determines whether a connection will check for ALIVE signals 
+    * sent from remote station in a cyclic pattern. A failing check will 
+    * cause the connection to close.
+    * 
+    * @param value boolean true == checking for ALIVE signals from remote
+    */
+   public static void setCheckAliveSignals (boolean value) {
+      parameters.setCheckAliveSignals(value);
+   }
+
+   /** Verifies the JennyNet network layer on the remote end of the connection.
+    * Blocks for a maximum of ? milliseconds to read data from remote.
+    * The socket must be in a new state (no data read).
+    * 
+    * @return boolean true == JennyNet confirmed, false == invalid endpoint or timeout
+    * @throws IOException 
+    */
+   static boolean verifyNetworkLayer (final Socket socket, Timer timer) throws IOException {
+      // write our handshake to remote
+      socket.getOutputStream().write(JennyNet.LAYER_HANDSHAKE);
+      
+      try {
+         // file in for the socket shutdown timer
+         // which covers the case that remote doesn't send enough bytes
+         TimerTask task = new TimerTask() {
+
+            @Override
+            public void run() {
+               try {
+                  socket.close();
+                  System.out.println("----- TIMEOUT on socket listening (SERVER : VERIFY NETWORK LAYER)");
+                  System.out.println("      REMOTE = " + socket.getRemoteSocketAddress());
+               } catch (IOException e) {
+                  e.printStackTrace();
+               }
+            }
+         };
+         timer.schedule(task, SOCKET_TIMEOUT);
+         
+         // try read remote handshake
+         byte[] handshake = new byte[16];
+         new DataInputStream(socket.getInputStream()).readFully(handshake);
+         task.cancel();
+
+         // test and verify remote handshake
+         return Util.equalArrays(handshake, JennyNet.LAYER_HANDSHAKE);
+         
+      } catch (SocketException e) {
+         // this is a typical timeout response
+         e.printStackTrace();
+         return false;
+      } catch (EOFException e) {
+         // this is a remote closure response
+         e.printStackTrace();
+         return false;
+      }
+   }
+   
 
 }

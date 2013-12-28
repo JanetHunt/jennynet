@@ -4,14 +4,14 @@ package org.jhunt.jennynet.intfa;
 
 /** Controls how objects are transmitted over the network. */
 
-public interface ISerialization 
+public interface Serialization 
 {
 
 	/** Returns a clone of this Serialisation object. 
 	 * 
 	 * @return ISerialization
 	 */
-	public ISerialization copy ();
+	public Serialization copy ();
 
 	/** Whether the given object is registered here for net transmission.
 	 * 

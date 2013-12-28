@@ -1,5 +1,6 @@
 package org.jhunt.jennynet.util;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -7,7 +8,6 @@ import java.util.Random;
 import java.util.UUID;
 
 import org.jhunt.jennynet.core.JennyNet;
-
 
 public class Util {
 
@@ -188,6 +188,52 @@ public class Util {
       dest[ offs + 2 ] = (byte)(  (v >>>  8) );
       dest[ offs + 3 ]     = (byte)(  v );
    }
+
+   /** Converts a textual hexadecimal integer representation into a corresponding
+    *  byte value array. 
+    * 
+    * @param hex textual hex value
+    * @return array of derived value bytes
+    * @since 0-4-0        
+    */
+   public static byte[] hexToBytes ( String hex )
+   {
+      ByteArrayOutputStream out;
+      int i, pos;
+      
+      if ( hex.length() % 2 != 0 )
+         throw new IllegalArgumentException( "hex string must be even" );
+      
+      out = new ByteArrayOutputStream( hex.length() / 2 );
+      pos = 0;
+      while ( pos < hex.length() ) {
+         i = Integer.parseInt( hex.substring( pos, pos+2 ), 16 );
+         out.write( i );
+         pos += 2;
+      }
+      return out.toByteArray();
+   }  // hexToBytes
+
+   /** Whether two byte arrays have equal contents.
+    * 
+    * @param a first byte array to compare
+    * @param b second byte array to compare
+    * @return <b>true</b> if and only if a) a and b have the same length, and 
+    *          b) for all indices i for 0 to length holds a[i] == b[i]
+    */
+   public static boolean equalArrays ( byte[] a, byte[] b )
+   {
+      if ( a == null && b == null )
+         return true;
+      if ( a.length != b.length )
+         return false;
+      
+      for ( int i = 0; i < a.length; i++ )
+         if ( a[i] != b[i] )
+            return false;
+      return true;
+   }
+
    
    /**
     * Creates a new temporary file name with prefix="jnet-" and suffix ".temp".

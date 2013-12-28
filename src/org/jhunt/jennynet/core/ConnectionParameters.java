@@ -21,16 +21,17 @@ public class ConnectionParameters implements Cloneable {
    private int transmissionParcelSize = JennyNet.getTransmissionParcelSize();
    private int parcelQueueCapacity = JennyNet.getParcelQueueCapacity();
    private int objectQueueCapacity = JennyNet.getObjectQueueCapacity();
-   private int aliveTimeout = JennyNet.getAlive_timeout();
-   private int alivePeriod;
-   private int confirmTimeout = JennyNet.getConfirm_timeout();
+   private int aliveTimeout = JennyNet.getAliveTimeout();
+   private int alivePeriod = JennyNet.getAlivePeriod();
+   private boolean sendAliveSignals = JennyNet.getSendAliveSignals();
+   private boolean checkAliveSignals = JennyNet.getCheckAliveSignals();
+   private int confirmTimeout = JennyNet.getConfirmTimeout();
    private int serialMethod = JennyNet.getDefaultSerialisationMethod();
    private File fileRootDir = JennyNet.getDefaultTransmissionRoot();
    private File fileTempDir = JennyNet.getDefaultTempDirectory();
    private Charset codingCharset = JennyNet.getCodingCharset();
 
    public ConnectionParameters() {
-      set_Alive_Period();
    }
    
    public Object clone () {
@@ -160,9 +161,8 @@ public class ConnectionParameters implements Cloneable {
 
    /** The current value of ALIVE_PERIOD.
     * This value determines the period for a connection to dispatch
-    * ALIVE signals to remote to indicate that it is still alive.
-    * ALIVE signals are only dispatched when no other network activity
-    * is ongoing.
+    * ALIVE signals to remote to indicate that it (the local station)
+    * is still alive.
     * 
     * @param timeout int milliseconds (minimum 500)
     */
@@ -170,11 +170,18 @@ public class ConnectionParameters implements Cloneable {
       return alivePeriod;
    }
    
-   /** Sets value of ALIVE_PERIOD in dependence of ALIVE_TIMEOUT and
-    * CONFIRM_TIMEOUT.
+   /** Sets the value of ALIVE_PERIOD.
+    * This value defines the period in which ALIVE signals will 
+    * be sent to the remote station if no other outgoing network activity
+    * occurs.
+    *       
+    * @param period int milliseconds (minimum 500)
+    * @throws IllegalArgumentException if parameter is below 500
     */
-   private void set_Alive_Period () {
-      alivePeriod = aliveTimeout - confirmTimeout/2;
+   public void setAlivePeriod (int period) {
+      if (period < 500) 
+         throw new IllegalArgumentException("timeout minimum = 500");
+      alivePeriod = period;
    }
    
    /** The value of parameter ALIVE_TIMEOUT.
@@ -194,17 +201,13 @@ public class ConnectionParameters implements Cloneable {
     * consequently the connection closed.
     *  
     * @param timeout int milliseconds (minimum 1000)
-    * @throws IllegalArgumentException if parameter is below 1000 or mismatching
+    * @throws IllegalArgumentException if parameter is below 1000
     */
    public void setAliveTimeout(int timeout) {
       if (timeout < 1000) 
          throw new IllegalArgumentException("timeout minimum = 1000");
-      if (timeout - confirmTimeout/2 < 500) 
-         throw new IllegalArgumentException("illegal ALIVE value: " + timeout 
-               + "; results in ALIVE_PERIOD below 500");
       
       aliveTimeout = timeout;
-      set_Alive_Period();
    }
 
    /** The value of parameter CONFIRM_TIMEOUT.
@@ -230,12 +233,8 @@ public class ConnectionParameters implements Cloneable {
    public void setConfirmTimeout(int timeout) {
       if (timeout < 1000) 
          throw new IllegalArgumentException("timeout minimum = 1000");
-      if (aliveTimeout - timeout/2 < 500) 
-         throw new IllegalArgumentException("illegal CONFIRM value: " + timeout 
-               + "; results in ALIVE_PERIOD below 500");
       
       confirmTimeout = timeout;
-      set_Alive_Period();
    }
 
    /** Returns the code number of the object serialisation method 
@@ -280,7 +279,7 @@ public class ConnectionParameters implements Cloneable {
     * @throws IllegalArgumentException if parameter is not a directory
     * @throws IOException if the path cannot be verified (canonical name)
     */
-   public void setFileRootDir(File dir) throws IOException {
+   public void setFileRootDir (File dir) throws IOException {
       if (dir == null) {
          fileRootDir = null;
       } else {
@@ -295,7 +294,7 @@ public class ConnectionParameters implements Cloneable {
     * 
     * @return File directory
     */
-   public File getTempDirectory() {
+   public File getTempDirectory () {
       return fileTempDir;
    }
 
@@ -322,7 +321,7 @@ public class ConnectionParameters implements Cloneable {
     * 
     * @return int maximum data size of a transmission parcel 
     */
-   public int getTransmissionParcelSize() {
+   public int getTransmissionParcelSize () {
       return transmissionParcelSize;
    }
 
@@ -343,7 +342,7 @@ public class ConnectionParameters implements Cloneable {
     * 
     * @return Charset text coding charset
     */
-   public Charset getCodingCharset() {
+   public Charset getCodingCharset () {
       return codingCharset;
    }
 
@@ -352,10 +351,46 @@ public class ConnectionParameters implements Cloneable {
     * 
     * @param charset Charset
     */
-   public void setCodingCharset(Charset charset) {
+   public void setCodingCharset (Charset charset) {
       if (charset == null)
          throw new NullPointerException();
       this.codingCharset = charset;
+   }
+
+   /** Whether the connection will send ALIVE signals to remote station in
+    * a cyclic pattern in order to indicate it is operational.
+    * 
+    * @return boolean true == sending ALIVE signals
+    */
+   public boolean getSendAliveSignals () {
+      return sendAliveSignals;
+   }
+
+   /** Sets whether the connection will send ALIVE signals to remote station in
+    * a cyclic pattern in order to indicate it is operational.
+    * 
+    * @param value boolean true == sending ALIVE signals, false == not sending
+    */
+   public void setSendAliveSignals (boolean value) {
+      this.sendAliveSignals = value;
+   }
+
+   /** Whether the connection will check for ALIVE signals sent from remote
+    * station in a cyclic pattern. A failing check will cause the connection to close.
+    * 
+    * @return boolean true == checking for ALIVE from remote
+    */
+   public boolean getCheckAliveSignals () {
+      return checkAliveSignals;
+   }
+
+   /** Sets whether the connection will check for ALIVE signals sent from remote
+    * station in a cyclic pattern. A failing check will cause the connection to close.
+    * 
+    * @param boolean true == checking for ALIVE from remote, false == not checking
+    */
+   public void setCheckAliveSignals (boolean value) {
+      this.checkAliveSignals = value;
    }
 
 }
