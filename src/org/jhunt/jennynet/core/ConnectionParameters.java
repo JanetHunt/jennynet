@@ -30,10 +30,12 @@ public class ConnectionParameters implements Cloneable {
    private File fileRootDir = JennyNet.getDefaultTransmissionRoot();
    private File fileTempDir = JennyNet.getDefaultTempDirectory();
    private Charset codingCharset = JennyNet.getCodingCharset();
+   private int idleThreshold = JennyNet.getIdleThreshold();
 
    public ConnectionParameters() {
    }
    
+   @Override
    public Object clone () {
       try {
          return super.clone();
@@ -393,4 +395,27 @@ public class ConnectionParameters implements Cloneable {
       this.checkAliveSignals = value;
    }
 
+   /** Sets the IDLE THRESHOLD for a connection. The IDLE THRESHOLD states an
+    * amount of bytes exchanged with the remote end per minute (incoming or outgoing).
+    * This threshold determines whether a connection qualifies for BUSY or IDLE status,
+    * which is indicated via connection events once a threshold is defined.
+    * Defaults to 0 (undefined).
+    *  
+    *  @param idleThreshold int bytes per minute
+    */
+   public void setIdleThreshold (int idleThreshold) {
+      this.idleThreshold = idleThreshold;
+   }
+
+   /** Returns the IDLE THRESHOLD for a connection. The IDLE THRESHOLD states an
+    * amount of bytes exchanged with the remote end per minute (incoming or outgoing).
+    * This threshold determines whether a connection qualifies for BUSY or IDLE status,
+    * which is indicated via connection events once a threshold is defined.
+    * Defaults to 0 (undefined).
+    *  
+    *  @return int threshold: bytes per minute
+    */
+   public int getIdleThreshold () {
+      return idleThreshold;
+   }
 }

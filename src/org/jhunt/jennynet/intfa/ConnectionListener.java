@@ -11,18 +11,22 @@ public interface ConnectionListener
     */
    public void connected (Connection connection);
 
-   /** Called when the connection is below the 
-    * {@link ConnectionImpl#setIdleThreshold(int) idle threshold}. 
+   /** Called when the connection falls below or mounts above the IDLE threshold.
+    * 
+    * @param connection Connection connection qualifying
+    * @param idle boolean true == is idle, false == is busy
     */ 
-   public void idle (Connection connection);
+   public void idle (Connection connection, boolean idle);
 
    /** Called when the remote end is no longer connected. This method should not
     * be delayed for a long time. 
     */
    public void disconnected (Connection connection, int cause, String message);
 
-   /** Called when the connection has been closed by the remote station.
-    * This indicates that the given connection instance is out of use.
+   /** Called when the connection has been closed. This may be caused
+    * by either the local layer or the remote end.
+    * This indicates that the given instance is out of use; a closed
+    * connection cannot be reconnected.
     * 
     * @param connection IConnection closed connection
     */
@@ -34,22 +38,25 @@ public interface ConnectionListener
     */   
    public void objectReceived (Connection connection, long objectNr, Object object);
 
-   /** Called when a PING - ECHO was received from the remote station.
+   /** Called when a PING-ECHO was received from the remote station.
     * 
     * @param pingEcho PingEcho
     */
    public void pingEchoReceived (PingEcho pingEcho);
 
-   /** Called when an incoming file-transfer has been completed.
-    * The received file is available at given file parameter.
-    * The additionally received remote file path information may 
-    * differ from the actual local file path.
+   /** Called when an event has occurred on a file-transfer, incoming or 
+    * outgoing.
+    * 
+    * <small>
+    * <p>A received file is indicated with <code>event.getType() == 
+    * TransmissionEventType.FILETRANSFER_RECEIVED</code>.
+    * The received file is available at <code>event.getFile()</code>.
+    * The additionally available "remote file path" information at <code>
+    * event.getPath()</code> may differ from the actual local file path.
+    * </small>
     *  
-    * @param file File received file (local file system)
-    * @param pathInfo String remote file path information (may be null)
+    * @param event File <code>TransmissionEvent</code>
     */
-//   public void fileReceived (IConnection connection, File file, String pathInfo);
-   
    public void transmissionEventOccurred (TransmissionEvent event);
    
 }

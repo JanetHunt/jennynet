@@ -35,8 +35,8 @@ public class JennyNet {
    public static final int MAX_TRANSMISSION_PARCEL_SIZE = 1024*128; 
    public static final int MIN_TRANSMISSION_PARCEL_SIZE = 1024; 
    public static final int DEFAULT_TRANSMISSION_PARCEL_SIZE = 1024*16;
-   public static final int DEFAULT_ALIVE_TIMEOUT = 20000;
-   public static final int DEFAULT_ALIVE_PERIOD = 15000;
+   public static final int DEFAULT_ALIVE_TIMEOUT = 25000;
+   public static final int DEFAULT_ALIVE_PERIOD = 20000;
    public static final int DEFAULT_CONFIRM_TIMEOUT = 10000; 
    
    private static Serialization globalSerialisation = new KryoSerialisation();
@@ -467,6 +467,30 @@ public class JennyNet {
          e.printStackTrace();
          return false;
       }
+   }
+
+   /** Returns the IDLE THRESHOLD for a connection. The IDLE THRESHOLD states an
+    * amount of bytes exchanged with the remote end per minute (incoming or outgoing).
+    * This threshold determines whether a connection qualifies for BUSY or IDLE status,
+    * which is indicated via connection events once a threshold is defined.
+    * Defaults to 0 (undefined).
+    *  
+    *  @return int threshold: bytes per minute
+    */
+   public static int getIdleThreshold() {
+      return parameters == null ? 0 : parameters.getIdleThreshold();
+   }
+   
+   /** Sets the IDLE THRESHOLD for a connection. The IDLE THRESHOLD states an
+    * amount of bytes exchanged with the remote end per minute (incoming or outgoing).
+    * This threshold determines whether a connection qualifies for BUSY or IDLE status,
+    * which is indicated via connection events once a threshold is defined.
+    * Defaults to 0 (undefined).
+    *  
+    *  @param idleThreshold int bytes per minute
+    */
+   public static void setIdleThreshold(int idleThreshold) {
+      parameters.setIdleThreshold(idleThreshold);
    }
    
 

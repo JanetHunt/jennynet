@@ -26,6 +26,7 @@ public interface PingEcho {
     */
    public long pingId();
 
+   @Override
    public String toString();
 
 }
