@@ -15,7 +15,6 @@ class TransmissionEventImpl extends EventObject implements TransmissionEvent {
    private long transmittedLength, expectedLength;
    private String path;
    private File file;
-   private boolean destinationRealised;
    
    public TransmissionEventImpl (
          Connection connection, 
@@ -50,34 +49,27 @@ class TransmissionEventImpl extends EventObject implements TransmissionEvent {
       this(connection, type, objectID, 0, null);
    }
 
-   /** Creates a transmission event for the types FILETRANSFER_INCOMING and
-    * FILETRANSFER_RECEIVED.
+   /** Creates a transmission event including the file and path references.
     * 
     * @param connection Connection
     * @param type TransmissionEventType
     * @param fileID long file number (object number)
     * @param file File reception file
     * @param pathInfo String (may be null)
-    * @param haveDestination boolean whether destination (pathInfo) has been realised
     */
    public TransmissionEventImpl(
          ConnectionImpl connection,
          TransmissionEventType type, 
          long fileID,
          File file, 
-         String pathInfo,
-         boolean haveDestination 
+         String pathInfo
          ) {
       this(connection, type, fileID);
-      if (type != TransmissionEventType.FILE_INCOMING &
-          type != TransmissionEventType.FILE_RECEIVED ) 
-         throw new IllegalArgumentException("illegal event type: " + type);
       if (file == null)
          throw new NullPointerException("file == null");
       
       this.file = file;
       this.path = pathInfo;
-      this.destinationRealised = haveDestination;
    }
 
    protected void setObjectID (long objectID) {
@@ -175,14 +167,6 @@ class TransmissionEventImpl extends EventObject implements TransmissionEvent {
       this.file = f;
    }
    
-   /* (non-Javadoc)
-    * @see org.janeth.jennynet.core.TransmissionEvent#isDestination()
-    */
-   @Override
-   public boolean haveDestination () {
-      return destinationRealised;
-   }
-   
    /** Sets whether the transferred file has been realised at its intended
     * destination.
     * 
@@ -226,6 +210,10 @@ class TransmissionEventImpl extends EventObject implements TransmissionEvent {
 
    protected void setException(Throwable exception) {
       this.exception = exception;
+   }
+
+   protected void setInfo(int info) {
+	      this.info = info;
    }
 
 }

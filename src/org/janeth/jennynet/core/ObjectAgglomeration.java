@@ -8,14 +8,16 @@ class ObjectAgglomeration {
    private long objectID;
    private int serialSize, bufferPos;
    private int numberOfParcels;
+   private SendPriority priority;
    private Object object;
    private byte[] byteStore;
    
    private int nextParcelNr;
    
-   public ObjectAgglomeration (ConnectionImpl connection, long objectID) {
+   public ObjectAgglomeration (ConnectionImpl connection, long objectID, SendPriority priority) {
       this.connection = connection;
       this.objectID = objectID;
+      this.priority = priority;
    }
 
    public boolean objectReady () {
@@ -30,6 +32,21 @@ class ObjectAgglomeration {
       return object;
    }
    
+   /** Returns the priority class by which the contained object was
+    * or is being sent.
+    * 
+    * @return SendPriority
+    */
+   public SendPriority getPriority () {
+	   return priority;
+   }
+   
+   /** Digest a single data parcel into the agglomeration.
+    * 
+    * @param parcel <code>TransmissionParcel</code>
+    * @throws IllegalStateException if parcel is malformed, out of sequence, 
+    *         or object serialisation size overflows maximum
+    */
    public void digestParcel (TransmissionParcel parcel) {
       // verify fitting
       if (parcel.getChannel() != TransmissionChannel.OBJECT) 
@@ -44,21 +61,27 @@ class ObjectAgglomeration {
          		" expected: " + nextParcelNr + hstr + ", received: " + parcel.getParcelSequencelNr());
       }
 
-      // initialise on parcel number 0
+      // initialise on parcel number 0 (HEADER PARCEL)
       if (parcel.getParcelSequencelNr() == 0) {
          ObjectHeader header = parcel.getObjectHeader();
          numberOfParcels = header.getNumberOfParcels();
          serialSize = header.getTransmissionSize();
+
+         // check correctness of indicated object data size 
+         if (numberOfParcels < 0 | serialSize < 0) {
+        	 throw new IllegalStateException("negative parcel amount or data length detected");
+         }
          
          // check serialisation method consistency
          if (header.getSerialisationMethod() != connection.getReceiveSerialization().getMethodID()) {
             throw new IllegalStateException("mismatching serialisation method on RECEIVE OBJECT parcel: "
                   + header.getSerialisationMethod());
          }
+         
          // check feasibility of serialisation buffer length 
-         if (serialSize > JennyNet.MAX_SERIALBUFFER_SIZE) {
+         if (serialSize > connection.getParameters().getMaxSerialisationSize()) {
             throw new IllegalStateException("received oversized object serialisation: ID=" + objectID +
-                  ", serialSize=" + serialSize);
+                  ", serial-size=" + serialSize);
          }
          byteStore = new byte[serialSize];
       }
@@ -73,7 +96,7 @@ class ObjectAgglomeration {
                      + bufferPos);
       }
 
-      // if last parcel arrived, perform object deserialisation
+      // if last parcel arrived, perform object de-serialisation
       if (nextParcelNr+1 == numberOfParcels) {
          Serialization ser = connection.getReceiveSerialization(); 
          object = ser.deserialiseObject(byteStore);

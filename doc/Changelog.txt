@@ -1,0 +1,20 @@
+Project JennyNet Network Layer
+Package-Version 0.2.0
+
+== Changes since 0.1.0
+
+- modified output-queue (user) to a priority-queue in order to eliminate
+  double lists for pings and objects; this synchronises events for the user.
+- implemented limitation to input object queue (sendObject). 
+  IllegalStateException is thrown in case of queue overflow
+- Modified and enhanced some error codes for the "connection closed" event.
+- added connection parameter "MAX_SERIALISE_SIZE" with default value 100 Mega.
+  Object serialisations above this parameter value cause a connection close.
+
+- completed signal handling for FILE TRANSFERS. Interface for file transfers
+  is now fully functional.
+- modified error codes for file transfers to the range 101..114. 
+- improved JUnit tests for file transfers.
+
+
+

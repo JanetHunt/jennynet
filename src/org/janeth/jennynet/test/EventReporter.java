@@ -92,8 +92,8 @@ public class EventReporter implements ConnectionListener {
          file = event.getFile();
          out.println("--- FILE RECEIVED (" + objectNr + "), path = " + event.getPath() +
                ", size = " + event.getTransmissionLength() + ", duration=" + event.getDuration());
-         String hstr = event.haveDestination() ? "DESTINATION" : "TEMP";
-         out.println("    available as " + hstr + " file = " + file);
+//         String hstr = event.haveDestination() ? "DESTINATION" : "TEMP";
+//         out.println("    available as " + hstr + " file = " + file);
          if ( file != null ) {
             out.println("    local file length is: " + (file.exists() ? file.length() : "- NIL -"));
          }

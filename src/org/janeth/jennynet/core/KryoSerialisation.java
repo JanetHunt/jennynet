@@ -68,7 +68,7 @@ public class KryoSerialisation implements Cloneable, Serialization {
 
    @Override
    public byte[] serialiseObject (Object object) {
-      Output output = new Output(1024, JennyNet.MAX_SERIALBUFFER_SIZE);
+      Output output = new Output(1024, connection.getParameters().getMaxSerialisationSize());
       kryo.writeClassAndObject(output, object);
       output.close();
       return output.toBytes();

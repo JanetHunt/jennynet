@@ -2,7 +2,7 @@ package org.janeth.jennynet.intfa;
 
 import java.io.File;
 
-/** Interface for a transmission event issued by a <code>Connection</code>.
+/** Interface for a file transmission event issued by a <code>Connection</code>.
  * Transmission events are part of the <code>ConnectionListener</code> event
  * dispatching description.
  * 
@@ -51,19 +51,32 @@ public interface TransmissionEvent {
 	   */
 	  FILE_INCOMING,
 
+	  /** A file transfer has been aborted. This event is indicated at both 
+	   * sides of the transfer. Details are indicated with the getInfo() value. 
+	   * With getPath() the intended relative filepath can be obtained. 
+	   * With getFile() the file is named which has been buffering streamed data
+	   * (incoming) or which held the data source (outgoing).
+	  */
 	  FILE_ABORTED,
 
-	  /** Indicated to the receiver, a file transfer has been completed and is 
-      * available for use. With getFile() the final location of the file can be 
-      * obtained. Notably this may be different to the sender intended location.
+	  /** Indicates to the receiver the success of a file transfer. 
+      * With getFile() the final location of the file can be obtained. 
       */
       FILE_RECEIVED,
       
-      /** This is the answer available for the sender of a file indicating that 
-      * the transfer has been completed and reached its intended destination.
-      */
+	  /** Indicates to the sender the success of a file transfer.
+       * With getFile() the data source file can be obtained. 
+       */
       FILE_CONFIRMED,
       
+      /** This indicates that a file transfer has terminated with FAILED status due to
+      * realisation problems at the receiving station. This may be the case if the
+      * receiver's system runs out of space or the intended destination as given by
+      * the sender cannot be realised.
+      * With getPath() the intended relative filepath can be obtained. 
+	  * With getFile() the file is named which has been buffering streamed data
+	  * (incoming) or which held the data source (outgoing).
+      */
       FILE_FAILED
    }
    
@@ -114,14 +127,6 @@ public interface TransmissionEvent {
     */
    public String getPath();
 
-   /** Whether the (complete) received file is at the sender-intended path 
-    * destination. Always returns <i>false</i> before transmission is
-    * completed or if the sender did not supply a destination path.
-    * 
-    * @return boolean true == file is at destination, false == file is TEMP file
-    */
-   public boolean haveDestination();
-
    /** Returns the file received or the file which buffers streaming data 
     * (TEMP-file), depending on the state-of-transmission.
     * Valid for event types FILETRANSFER_RECEIVED and FILETRANSFER_INCOMING,
@@ -145,7 +150,7 @@ public interface TransmissionEvent {
     */
    public long getObjectID();
 
-   /** If an error exception is known as to the cause of a transfer abort,
+   /** If an error exception is known for the cause of a transfer abort,
     * it is shown here. Otherwise this method returns null.
     * 
     * @return Throwable cause of abort error or null

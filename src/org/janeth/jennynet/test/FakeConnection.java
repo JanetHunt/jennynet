@@ -24,6 +24,8 @@ public class FakeConnection implements Connection {
    private String connectionName;
    private ConnectionParameters parameters = JennyNet.getParameters();
    private Properties properties; 
+   private Serialization sendSerialisation = JennyNet.getGlobalSerialisation().copy();
+   private Serialization receiveSerialisation = JennyNet.getGlobalSerialisation().copy();
    private InetSocketAddress remoteAddress;
    private InetSocketAddress localAddress;
    private boolean closed;
@@ -85,14 +87,12 @@ public class FakeConnection implements Connection {
 
    @Override
    public Serialization getSendSerialization () {
-      // TODO Auto-generated method stub
-      return null;
+      return sendSerialisation;
    }
 
    @Override
    public Serialization getReceiveSerialization () {
-      // TODO Auto-generated method stub
-      return null;
+      return receiveSerialisation;
    }
 
    @Override
@@ -244,16 +244,14 @@ public class FakeConnection implements Connection {
    public void setReceiveSerialization (Serialization s) {
    }
 
-@Override
-public long getTransmissionVolume() {
-	// TODO Auto-generated method stub
-	return 0;
-}
-
-@Override
-public int getTransmissionSpeed() {
-	// TODO Auto-generated method stub
-	return -1;
-}
+	@Override
+	public long getTransmissionVolume() {
+		return 0;
+	}
+	
+	@Override
+	public int getTransmissionSpeed() {
+		return -1;
+	}
 
 }

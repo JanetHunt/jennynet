@@ -178,7 +178,7 @@ public interface Connection {
     * @throws NullPointerException if parameter is null
     * @throws UnregisteredObjectException if parameter object is not 
     *         registered for transmission
-    * @throws IllegalStateException if the send queue was full (operation 
+    * @throws IllegalStateException if the send queue was full (order 
     *         rejected)
     */
    public long sendObject (Object object);
@@ -196,7 +196,8 @@ public interface Connection {
     * @throws NullPointerException if parameter is null
     * @throws UnregisteredObjectException if parameter object is not 
     *         registered for transmission
-    * @throws IllegalStateException if the send queue was full (rejected)
+    * @throws IllegalStateException if the send queue was full (order 
+    *         rejected)
     */
    public long sendObject (Object object, SendPriority priority);
 
@@ -272,27 +273,27 @@ public interface Connection {
    public long sendPing ();
 
    /** Attempts to set the sending TEMPO on both ends of this connection
-    * to match the given baud rate, where possible. This is useful to 
-    * slow down the transmission rate of a connection.
+    * to match the given baud rate (bytes per second), where possible. 
+    * This is useful to slow down the transmission rate of a connection.
     * 
-    * @param baud int
+    * @param baud int bytes per second or -1 for no limit
     */
    public void setTempo (int baud);
    
-   /** Fatally terminates an incomplete transmission of an object or
-    * a file, incoming or outgoing. The layer discriminates incoming and 
-    * outgoing name spaces for objects (including files). The name space 
-    * is represented here as an integer <i>direction</i> parameter. Does 
-    * nothing if there is no transmission found for the given id.
+   /** Fatally terminates an incomplete file transmission, incoming or 
+    * outgoing. The layer discriminates incoming and 
+    * outgoing name spaces for objects, including files. The name space 
+    * is represented here as the integer <i>direction</i> parameter. Does 
+    * nothing if there is no transmission found for the given identifier.
     * <p><small>The practical value of this method lies in rejecting or
     * aborting an incoming file transmission which was indicated as connection
-    * event, or an outgoing transmission if it should stall for an unknown 
+    * event, or an outgoing transmission if it should become obsolete for a 
     * reason. Outgoing transmissions are identified by a long integer value 
-    * which is returned by the <code>sendObject()</code> or <code>sendFile()
-    * </code> methods. The breaking of transmissions after they have completed
-    * is meaningless.</small>
+    * which is returned by the <code>sendFile()</code> methods. 
+    * The breaking of transmissions which have completed is meaningless.
+    * </small>
     * 
-    * @param objectID long identifier number for transmitted object (or file)
+    * @param objectID long identifier number for transmitted file
     * @param direction int 0 = incoming, 1 = outgoing
     */
    public void breakTransfer (long objectID, int direction);

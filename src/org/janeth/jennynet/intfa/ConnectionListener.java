@@ -51,7 +51,7 @@ public interface ConnectionListener
 
    /** Called when an object has been received from the remote end of the
     *  connection. The given object is available here in same data state and
-    *  with same identifier as it has been sent on the remote end.
+    *  with the same layer based identifier as sent on the remote end.
     *  
     * @param connection <code>Connection</code> source connection
     * @param objectNr long identifier of received object

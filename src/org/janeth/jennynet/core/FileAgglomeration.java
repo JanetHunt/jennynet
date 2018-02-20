@@ -183,11 +183,16 @@ class FileAgglomeration extends ParcelAgglomeration {
       }
    }
 
+   /** Attempts a regular transfer termination after the last parcel was received.
+    * Failure in realising the destination file may occur, e.g. when space is limited.
+    * 
+    * @throws IOException
+    */
    private void finishFileOutput() throws IOException {
       if (fileOutput == null) return;
       cancelTransfer();
-      boolean haveDestination = false;
       boolean success = true;
+      Exception exception = null;
       
   	  synchronized(fileOutput) {
 	      fileOutput.close();
@@ -202,54 +207,66 @@ class FileAgglomeration extends ParcelAgglomeration {
 	             connection.getParameters().getFileRootDir().getFreeSpace() < file.length() + 32000
 	             ) {
 	            // cannot realise destination file (environment reasons)
-	            success = false;
+                success = false;
 	            
 	         } else {
-	            // create destination file
-	            destination.getParentFile().mkdirs();
-	            OutputStream out = new FileOutputStream(destination);
-	            InputStream in = null;
 	            try {
-	               in = new FileInputStream(file);
-	               Util.transferData(in, out, JennyNet.STREAM_BUFFER_SIZE);
-	               haveDestination = true;
-	            } finally {
-	               if (in != null) {
-	                  in.close();
-	               }
-	               out.close();
+		            // create destination file (copy from TEMP-file)
+		            destination.getParentFile().mkdirs();
+		            OutputStream out = new FileOutputStream(destination);
+		            InputStream in = null;
+
+		            try {
+		               in = new FileInputStream(file);
+		               Util.transferData(in, out, JennyNet.STREAM_BUFFER_SIZE);
+		            } finally {
+		               if (in != null) {
+		                  in.close();
+		               }
+		               out.close();
+		            }
+
+		        // failed creating destination file (IO error)     
+	            } catch (Exception e) {
+	            	success = false;
+	            	exception = e;
 	            }
 	         }
-	      }
-	      
-	      // remove the TEMP file if destination copy is successful
-	      // and re-define file as destination
-	      if (haveDestination) {
-	         file.delete();
-	         file = destination;
+	         
+		      // remove the TEMP file 
+		      // re-define file as destination if copy successful
+	          file.delete();
+		      if (success) {
+		         file = destination;
+		      }
 	      }
   	  }
 
-      // signal transfer success or failure to remote
+      // signal transfer success or failure to remote station
       // (failure prevails if a file destination could not be realised)
       Signal signal = success ? Signal.newConfirmSignal(fileID) : 
-                      Signal.newFailSignal(fileID, 1, null);    
+                      Signal.newFailSignal(fileID, 1, null);
       connection.sendSignal(signal);
       
-      // inform the user about file-received (event)
+      // inform the user about file-received or transmission failed (event)
       TransmissionEventImpl event = new TransmissionEventImpl(connection, 
-            TransmissionEventType.FILE_RECEIVED, fileID, file, path, 
-            haveDestination);
+            success ? TransmissionEventType.FILE_RECEIVED : TransmissionEventType.FILE_FAILED, 
+            fileID, file, path);
       event.setTransmissionLength(receivedFileLength);
       event.setExpectedLength(expectedFileLength);
       event.setDuration(getDuration());
+      
+      if (!success) {
+    	  event.setInfo(102);
+    	  event.setException(exception);
+      }
       connection.fireTransmissionEvent(event);
    }
 
    @Override
    protected void exceptionThrown(Throwable e) {
       e.printStackTrace();
-      dropTransfer(1, 1, e);
+      dropTransfer(110, 1, e);
    }
 
    /** Terminates this file agglomeration by shutting down the thread
@@ -274,6 +291,12 @@ class FileAgglomeration extends ParcelAgglomeration {
    public void dropTransfer (int eventInfo, int signalInfo, Throwable e) {
       cancelTransfer();
       
+      if (ConnectionImpl.debug) { 
+   	     System.out.println("-- dropping incoming file transfer ID " + fileID + ", con: " + connection);
+	     System.out.println("   signal to remote: BREAK " + signalInfo);
+         System.out.println("   FILE_ABORTED event " + eventInfo);
+      }
+      
       // erase reception file
       if (fileOutput != null) {
 	  	  synchronized(fileOutput) {
@@ -295,11 +318,13 @@ class FileAgglomeration extends ParcelAgglomeration {
 
       if (eventInfo != 0) {
          // inform the user (abortion event)
+    	 
          TransmissionEventImpl event = new TransmissionEventImpl(connection,
               TransmissionEventType.FILE_ABORTED,
               fileID, eventInfo, e );
          event.setDuration(getDuration());
          event.setPath(path);
+         event.setFile(file);
          event.setTransmissionLength(receivedFileLength);
          event.setExpectedLength(expectedFileLength);
          connection.fireTransmissionEvent(event);

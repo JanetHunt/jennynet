@@ -2,6 +2,7 @@ package org.janeth.jennynet.test;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -15,6 +16,7 @@ import org.janeth.jennynet.core.SendPriority;
 import org.janeth.jennynet.core.Server;
 import org.janeth.jennynet.intfa.Connection;
 import org.janeth.jennynet.intfa.ServerConnection;
+import org.janeth.jennynet.util.CRC32;
 import org.janeth.jennynet.util.Util;
 import org.junit.Test;
 
@@ -568,6 +570,240 @@ public class TestUnit_Object_Transmission {
 		} finally {
 			System.out.println("--- System Memory : " + Runtime.getRuntime().freeMemory() + " / " 
 					+ Runtime.getRuntime().totalMemory());
+			if (sv != null) {
+				sv.closeAllConnections();
+				sv.close();
+				Util.sleep(10);
+			}
+			if (cl != null) {
+				cl.close();
+			}
+		}
+	}
+
+	private static class TestObject_C1 {
+		private enum Choice {eins, zwei, drei}
+
+		private long serialNr = Util.nextRand(Integer.MAX_VALUE);
+		private int testNr = Util.nextRand(600000);
+		private String text = "Und sie konnten ihn kaum noch tragen!";
+		private Choice choice = Choice.drei;
+		
+		
+		public int getCrc() {
+			CRC32 crc = new CRC32();
+			crc.update(testNr);
+			crc.update(serialNr);
+			crc.update(text.getBytes());
+			crc.update(choice.ordinal());
+			return crc.getIntValue();
+		}
+	}
+
+	/** A <code>ConnectionListener</code> to receive 
+		 * <code>JennyNetByteBuffer</code> and return them via an output method
+		 * as list of byte arrays. There is a lock as parameter which gets 
+		 * notified with each reception event.
+		 */
+		private class RealObjectReceptionListener extends DefaultConnectionListener {
+	
+			private List<Object> received = new ArrayList<Object>();
+			private Object lock;
+			private int unlockThreshold;
+	
+			public RealObjectReceptionListener (Object lock, int unlockSize) {
+				this.lock = lock;
+				unlockThreshold = unlockSize;
+			}
+			
+			@Override
+			public void objectReceived(Connection con, long objNr, Object obj) {
+				received.add(obj);
+				
+				if (received.size() == unlockThreshold)
+				synchronized(lock) {
+					lock.notify();
+				}
+			}
+			
+			public List<Object> getReceived () {
+				return received;
+			}
+			
+	//		public void reset (int unlockSize) {
+	//			received.clear();
+	//			unlockThreshold = unlockSize;
+	//		}
+	
+			public void reset () {
+				received.clear();
+			}
+		}
+
+
+	@Test
+	public void transmit_real_objects () throws IOException, InterruptedException {
+		Server sv = null;
+		Client cl = null;
+		
+		final Object lock = new Object();
+		final RealObjectReceptionListener receptionListener = new RealObjectReceptionListener(lock, 1);
+	
+	try {
+		sv = new StandardServer(new InetSocketAddress("localhost", 3000), null);
+		sv.getParameters().setAlivePeriod(0);
+		sv.start();
+		
+		// set up a running connection
+		cl = new Client();
+		cl.getParameters().setAlivePeriod(5000);
+		cl.getParameters().setTransmissionParcelSize(8*1024);
+		cl.addListener(receptionListener);
+		cl.connect(100, sv.getSocketAddress());
+		System.out.println("-- connection established " + cl.toString());
+		Util.sleep(20);
+		
+		synchronized (lock) {
+			
+			Connection scon = sv.getConnections()[0];
+	
+			// CASE 1
+			// prepare random data block to transmit
+			int dataLen = 100000;
+			byte[] block = Util.randBytes(dataLen);
+
+			// prepare object of class TestObject_C1
+			TestObject_C1 obj1 = new TestObject_C1();
+			int crc1 = obj1.getCrc();
+			scon.getSendSerialization().registerClass(TestObject_C1.class);
+			cl.getReceiveSerialization().registerClass(TestObject_C1.class);
+			
+			// send over connection
+			long time = System.currentTimeMillis();
+			scon.sendObject(obj1);
+			lock.wait(1000);
+			int elapsed = (int)(System.currentTimeMillis() - time);
+			
+			// check received data
+			assertFalse("no object received by server", receptionListener.getReceived().isEmpty());
+			Object object = receptionListener.getReceived().get(0);
+			assertTrue("received object is not of sender class", object instanceof TestObject_C1);
+			TestObject_C1 recObj = (TestObject_C1)object;
+			assertTrue("data integrity error (transmitted 1)", recObj.getCrc() == crc1);
+			System.out.println("-- transmission 1 verified, time elapsed " + elapsed + " ms");
+			assertTrue("transmission time error", elapsed >= 0 & elapsed < 200);
+			
+		}
+	
+	// shutdown net systems
+	} finally {
+		System.out.println("--- System Memory : " + Runtime.getRuntime().freeMemory() + " / " 
+				+ Runtime.getRuntime().totalMemory());
+		if (sv != null) {
+			sv.closeAllConnections();
+			sv.close();
+			Util.sleep(10);
+		}
+		if (cl != null) {
+			cl.close();
+		}
+	}
+	}
+
+
+	@Test
+	public void send_queue_full () throws IOException, InterruptedException {
+		Server sv = null;
+		Client cl = null;
+		
+		try {
+			sv = new StandardServer(new InetSocketAddress("localhost", 3000), null);
+			sv.getParameters().setAlivePeriod(0);
+			sv.start();
+			
+			// set up a running connection
+			cl = new Client();
+			cl.getParameters().setAlivePeriod(5000);
+			cl.getParameters().setObjectQueueCapacity(50);
+			cl.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl.toString());
+			Util.sleep(50);
+			
+			ServerConnection scon = (ServerConnection)sv.getConnections()[0];
+			int speed = 20000;
+			scon.setTempo(speed);
+			Util.sleep(10);
+			
+			// prepare random data block to transmit
+			int dataLen = 100000;
+			byte[] block = Util.randBytes(dataLen);
+			
+			// start sending from client
+			try {
+				for (int i = 0; i < 100; i++) {
+					cl.sendData(block, 0, dataLen, SendPriority.Normal);
+				}
+				fail("illegal state exception for send-queue (client) overflow expected");
+			} catch (IllegalStateException e) {
+			}
+			
+		// shutdown net systems
+		} finally {
+			if (sv != null) {
+				sv.closeAllConnections();
+				sv.close();
+				Util.sleep(10);
+			}
+			if (cl != null) {
+				cl.close();
+			}
+		}
+	}
+
+
+	@Test
+	public void send_serialisation_overflow () throws IOException, InterruptedException {
+		Server sv = null;
+		Client cl = null;
+		
+		try {
+			sv = new StandardServer(new InetSocketAddress("localhost", 3000), null);
+			sv.getParameters().setAlivePeriod(0);
+			sv.start();
+			
+			// set up a running connection
+			cl = new Client();
+			cl.getParameters().setAlivePeriod(5000);
+			cl.getParameters().setMaxSerialisationSize(1000);
+			cl.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl.toString());
+			Util.sleep(50);
+			
+			ServerConnection scon = (ServerConnection)sv.getConnections()[0];
+			int speed = 20000;
+			scon.setTempo(speed);
+			scon.getParameters().setMaxSerialisationSize(2000);
+			Util.sleep(10);
+
+			// prepare random data block to transmit
+			int dataLen = 100000;
+			byte[] block = Util.randBytes(dataLen);
+			
+			// start sending from client
+			cl.sendData(block, 0, dataLen, SendPriority.Normal);
+//				System.out.println("-- EXCEPTION thrown for SEND-DATA on client");
+			
+			// start sending from server
+//			scon.sendData(block, 0, dataLen, SendPriority.Normal);
+			Util.sleep(1000);
+			
+			assertTrue("expected connection closed (client)", cl.isClosed());
+			assertTrue("expected connection closed (server)", scon.isClosed());
+			
+			// TODO test exception type via connection listener
+			
+		// shutdown net systems
+		} finally {
 			if (sv != null) {
 				sv.closeAllConnections();
 				sv.close();

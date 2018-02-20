@@ -94,18 +94,22 @@ class ObjectHeader {
    }
 
    public void setTransmissionSize (int length) {
+	   if (length < 0) 
+		   throw new IllegalArgumentException();
       bufferSize = length;
    }
 
    public void setNrOfParcels (int nrOfParcels) {
+	   if (nrOfParcels < 0) 
+		   throw new IllegalArgumentException();
       nrParcels = nrOfParcels;
    }
 
-   public void setMethod(int method) {
+   public void setMethod (int method) {
       this.method = method;
    }
 
-   public void setPath(String path) {
+   public void setPath (String path) {
       if (path != null && path.length() > 0xFFFF) 
          throw new IllegalArgumentException("PATH too long!");
       

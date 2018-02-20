@@ -51,6 +51,7 @@ import org.janeth.jennynet.util.Util;
 class ConnectionImpl implements Connection {
    
    protected static boolean debug = false;
+   
    /** Internal static Timer for time-control tasks. */
    protected static Timer timer = new Timer();
    /** Internal type marker for events dispatched to IConnectionListeners */
@@ -89,8 +90,7 @@ class ConnectionImpl implements Connection {
    
    // data queues receiving
    private CoreReceive coreReceive;
-   private BlockingQueue<ObjectWrapper> objectReceiveQueue;
-   private BlockingQueue<PingEcho> pingEchoQueue;
+   private PriorityBlockingQueue<UserObject> objectReceiveQueue;
    
    // operational
    private AliveSignalTimerTask aliveSignalTask;
@@ -213,7 +213,7 @@ class ConnectionImpl implements Connection {
 
    @Override
    protected void finalize () throws Throwable {
-      close(null, 10);
+      close(null, 99);
    }
 
    @Override
@@ -255,6 +255,13 @@ class ConnectionImpl implements Connection {
       
       long objNr = -1; 
       if (inputProcessor != null && !inputProcessor.isTerminated()) {
+          // throw exception if input queue is at maximum
+    	  int topSize = getParameters().getObjectQueueCapacity();
+    	  if (inputQueue.size() >= topSize) {
+    		  throw new IllegalStateException("input queue is full, caps = " + topSize);
+    	  }
+
+    	  // assign object number and add to input queue
     	  objNr = getNextObjectNr();
     	  inputQueue.add(new UserObject(object, objNr, priority));
       }
@@ -312,6 +319,27 @@ class ConnectionImpl implements Connection {
       }
    }
 
+   /** Inserts the specified user object (wrapper) into the outgoing queue. 
+   * This method may block until space is made available in the queue. The
+   * queue may not become larger than <code>
+   * getParameters().getObjectQueueCapacity()</code>.
+   * 
+   * @param object <code>UserObject</code>
+   */
+   private void putObjectToReceiveQueue (UserObject object) {
+		// naive blocking behaviour depending on queue size
+	   int topSize = getParameters().getObjectQueueCapacity();
+		do {
+			if (objectReceiveQueue.size() < topSize) {
+				break;
+			}
+			Util.sleep(25);
+		} while (true);
+
+		// put parcel into sorting queue
+		objectReceiveQueue.put(object);
+   }
+   
    @Override
    public long sendPing() {
 	  checkConnected();
@@ -328,7 +356,8 @@ class ConnectionImpl implements Connection {
    public void setTempo (int baud) {
 	  checkConnected();
       if (debug) {
-    	  System.out.println("-- setting TEMPO to " + baud + " bytes/sec");
+    	  System.out.println(baud > -1 ? ("-- setting TEMPO to " + baud + " bytes/sec")
+    	  : "-- setting TEMPO to NO LIMIT");
       }
 
 	  // adjust connection settings
@@ -378,7 +407,7 @@ class ConnectionImpl implements Connection {
       // find an incoming file transmission
       FileAgglomeration fileRec = fileReceptorMap.get(objectID);
       if (fileRec != null) {
-         fileRec.dropTransfer(9, 3, null);
+         fileRec.dropTransfer(108, 3, null);
       }
    }
    
@@ -388,7 +417,7 @@ class ConnectionImpl implements Connection {
       // find an outgoing file transmission
       SendFileProcessor fileSender = fileSenderMap.get(objectID);
       if (fileSender != null) {
-         fileSender.breakTransfer(6, 4, null);
+         fileSender.breakTransfer(105, 4, null);
       }
    }
    
@@ -510,9 +539,8 @@ class ConnectionImpl implements Connection {
       pingSentMap = new Hashtable<Long, Long>();
 
       // create data queues
-      inputQueue = new PriorityBlockingQueue<UserObject>(par.getObjectQueueCapacity());
-      objectReceiveQueue = new LinkedBlockingQueue<ObjectWrapper>(par.getObjectQueueCapacity());
-      pingEchoQueue = new LinkedBlockingQueue<PingEcho>(par.getObjectQueueCapacity());
+      inputQueue = new PriorityBlockingQueue<UserObject>();
+      objectReceiveQueue = new PriorityBlockingQueue<UserObject>();
       coreReceive = new CoreReceive();
       coreSend = new CoreSend();
       
@@ -550,6 +578,20 @@ class ConnectionImpl implements Connection {
       }
       setCheckIdleState(false);
       
+      // shutdown send file threads (including signalling)
+      if (fileSenderMap != null) {
+    	  for (SendFileProcessor pro : getSendFileAgents()) {
+    		  pro.breakTransfer(113, 6, null);
+    	  }
+      }
+      
+      // shutdown file receptor threads (including signalling)
+      if (fileReceptorMap != null) {
+    	  for (FileAgglomeration agg : getFileReceptors()) {
+    		  agg.dropTransfer(114, 5, null);
+    	  }
+      }
+      
       // terminate our processing threads
       if (inputProcessor != null) {
           inputProcessor.terminate();
@@ -572,26 +614,9 @@ class ConnectionImpl implements Connection {
           coreSend.terminate(new ErrorObject(info, msg));
       }
       
-      // shutdown send file threads (including signalling)
-      if (fileSenderMap != null) {
-    	  for (SendFileProcessor pro : getSendFileAgents()) {
-    		  pro.breakTransfer(9, 2, null);
-    	  }
-      }
-      
-      // shutdown file receptor threads (including signalling)
-      if (fileReceptorMap != null) {
-    	  for (FileAgglomeration agg : getFileReceptors()) {
-    		  agg.dropTransfer(10, 3, null);
-    	  }
-      }
-      
       // clear incoming data queues
       if (objectReceiveQueue != null) {
     	  objectReceiveQueue.clear();
-      }
-      if (pingEchoQueue != null) {
-    	  pingEchoQueue.clear();
       }
       if (objectReceptorMap != null) {
     	  objectReceptorMap.clear();
@@ -687,7 +712,7 @@ class ConnectionImpl implements Connection {
       }
    }
 
-   protected void fireObjectEvent (ObjectWrapper object) {
+   protected void fireObjectEvent (UserObject object) {
       if (object == null)
          throw new NullPointerException();
       
@@ -855,8 +880,7 @@ class ConnectionImpl implements Connection {
    /** This thread performs serialisation of user input objects and puts them
     * into the core-send parcel queue.
     */
-   private class InputProcessor extends Thread 
-   {
+   private class InputProcessor extends Thread {
       boolean operating, terminated;
       
       InputProcessor () {
@@ -881,7 +905,18 @@ class ConnectionImpl implements Connection {
                SendPriority priority = object.priority;
                
                // serialise the input object
-               byte[] serObj = getSendSerialization().serialiseObject(object.userObject);
+               byte[] serObj;
+               try {
+            	   serObj = getSendSerialization().serialiseObject(object.getObject());
+               } catch (Exception e) {
+            	   throw new IllegalStateException("send serialisation error (" +
+            			   getLocalAddress() + ") object-id " + objectNr, e);
+               }
+            		   
+               if (serObj.length > parameters.getMaxSerialisationSize()) {
+            	   throw new IllegalStateException("send serialisation size overflow for object " + 
+            			   objectNr + ", size " + serObj.length);
+               }
                
                // split serialisation into send parcels
                TransmissionParcel[] parcelBundle = 
@@ -922,8 +957,7 @@ class ConnectionImpl implements Connection {
    /** Handles delivery of output objects (de-serialised net-received objects)
     * to the application.
     */
-   private class OutputProcessor extends Thread 
-   {
+   private class OutputProcessor extends Thread {
       boolean operating;
 
       public OutputProcessor () {
@@ -933,37 +967,25 @@ class ConnectionImpl implements Connection {
       
       @Override
       public synchronized void run() {
-         PingEcho pingEcho;
-         ObjectWrapper object;
-         
          operating = true;
          setPriority(parameters.getBaseThreadPriority());
          
          while (operating) {
+            UserObject object;
             try {
-               // 1. priority service: PING-ECHO events
-               while ((pingEcho = pingEchoQueue.poll()) != null) {
+
+               // read from object-receive-queue and deliver to application
+               while ((object = objectReceiveQueue.take()) != null) {
                   // dispatch event to connection listeners
-                  firePingEchoEvent(pingEcho);
+            	  if (object.getObject() instanceof PingEcho) {
+                      firePingEchoEvent((PingEcho)object);
+            	  } else {
+            		  fireObjectEvent(object);
+            	  }
                }
-               
-               // 2. priority service: OBJECT RECEIVED events
-               while ((object = objectReceiveQueue.poll()) != null) {
-                  // dispatch event to connection listeners
-                  fireObjectEvent(object);
-                  if (interrupted()) {
-                     throw new InterruptedException();
-                  }
-               }
-               
-               // enter into WAIT state
-               wait();
                
             } catch (InterruptedException e) {
-               if (debug) {
-                  System.out.println("-- Output-Processor INTERRUPTED!");
-               }
-               
+            	
             } catch (Throwable e) {
                System.out.println("********  UNCAUGHT APPLICATION EXCEPTION  ******** : \n" + e);
                e.printStackTrace();
@@ -1108,7 +1130,7 @@ class ConnectionImpl implements Connection {
                
             } catch (Exception e) {
             	e.printStackTrace();
-                breakTransfer(4, 2, e);
+                breakTransfer(111, 2, e);
                 break;
             } 
          }
@@ -1146,15 +1168,22 @@ class ConnectionImpl implements Connection {
        */
       public void finishTransfer (boolean success) {
          cancelTransfer();
+         if (debug) {
+        	 System.out.println("--- finishing SEND file transfer ID " + fileID  
+        			 + ", success=" + success + ", target: " + remotePath
+        			 + ", " + ConnectionImpl.this);
+         }
          
          // EVENT dispatch: inform user (file transfer event)
          TransmissionEventType type = success ? TransmissionEventType.FILE_CONFIRMED 
                : TransmissionEventType.FILE_FAILED;
          TransmissionEventImpl event = new TransmissionEventImpl(
                ConnectionImpl.this, type, fileID);
+         event.setInfo(success ? 0 : 101);
          event.setDuration(duration);
          event.setTransmissionLength(transmittedLength);
          event.setPath(remotePath);
+         event.setFile(file);
          fireTransmissionEvent(event);
       }
 
@@ -1167,11 +1196,16 @@ class ConnectionImpl implements Connection {
        * @param e Exception error message
        */
       public void breakTransfer (int eventInfo, int signalInfo, Exception e) {
-         if ( !(isAlive() & ongoing) ) {
+         if ( !ongoing ) {
             return;
          }
          cancelTransfer();
-         // TODO mark bad sending object in a set
+
+         if (debug) { 
+       	     System.out.println("-- dropping outgoing file transfer ID " + fileID + ", con: " + ConnectionImpl.this);
+    	     System.out.println("   signal to remote: BREAK " + signalInfo);
+             System.out.println("   FILE_ABORTED event " + eventInfo);
+          }
 
          // send a TRANSFER BREAK signal to remote
          if (signalInfo != 0) {
@@ -1198,23 +1232,22 @@ class ConnectionImpl implements Connection {
       }
 
       /** Terminates this file transmission for a timeout event
-       * and sending a FAIL signal to remote.
+       * sends a FAIL signal to remote and issues a FILE_FAILED event to local.
        * 
        * @param sec int timeout time in seconds
        */
       public void timeoutTransfer (int sec) {
-         if ( !ongoing ) return;
+         if (!ongoing) return;
          
          // stop transfer
          cancelTransfer();
-         // TODO mark bad sending object in a set
 
          // signal FAILURE to remote
          sendSignal(Signal.newFailSignal(fileID, 2, "timeout = " + sec + " sec"));
 
          // EVENT dispatch: inform user (timeout abortion event)
          TransmissionEventImpl event = new TransmissionEventImpl(ConnectionImpl.this,
-              TransmissionEventType.FILE_FAILED, fileID, 2);
+              TransmissionEventType.FILE_FAILED, fileID, 103);
          event.setDuration(duration);
          event.setPath(remotePath);
          event.setFile(file);
@@ -1256,8 +1289,6 @@ class ConnectionImpl implements Connection {
     * terminated.
     *
     * Currently this terminates if an IO error occurs on the socket.
-    * Theoretically it is possible to distinguish error cases and
-    * implement connection restart.
     */
    private class CoreSend extends PriorityBlockingQueue<TransmissionParcel> 
    {
@@ -1297,8 +1328,20 @@ class ConnectionImpl implements Connection {
                 		 wait_for_send_signal();
                 	 }
                 	  
-                     // take next parcel from send-queue and send over socket
+                     // take next parcel from send-queue
                      TransmissionParcel parcel = take();
+                     
+                     // avoid sending invalid parcels of cancelled file transfers
+                     if (parcel.getChannel() == TransmissionChannel.FILE &&
+                    	 fileSenderMap.get(parcel.getObjectID()) == null) {
+                    	 if (debug) {
+                    		 System.out.println("-- dropped a FILE SENDER parcel, id " 
+                    				 + parcel.getObjectID() + ", nr " + parcel.getParcelSequencelNr());
+                    	 }
+                    	 continue;
+                     }
+                     
+                     // send parcel over network socket
                      currentLoad -= parcel.getSerialisedLength();
                      writeToSocket(parcel);
                      lastTransmitTime = System.currentTimeMillis();
@@ -1308,7 +1351,7 @@ class ConnectionImpl implements Connection {
                         exchangedDataVolume += parcel.getSerialisedLength();
                      }
                      
-                     // schedule a task that was defined on that parcel
+                     // schedule a timer-task that may be defined on the parcel
                      SchedulableTimerTask task = parcel.getTimerTask();
                      if (task != null) {
                         task.schedule(timer);
@@ -1321,7 +1364,7 @@ class ConnectionImpl implements Connection {
                      working = false;
                      close(e, 1);
                   } 
-               }
+               }  // while loop
 
                // close the network socket when core-send terminates
                closeSocket(error);
@@ -1414,7 +1457,7 @@ class ConnectionImpl implements Connection {
 
       @Override
       protected void finalize() throws Throwable {
-         terminate(new ErrorObject(999, "instance finalized"));
+         terminate(new ErrorObject(99, "instance finalized"));
          super.finalize();
       }
 
@@ -1432,7 +1475,7 @@ class ConnectionImpl implements Connection {
     * the network socket for the OBJECT CHANNEL and also works as the core
     * RECEIVE PROCESSOR. Received SIGNALs are immediately digested, 
     * FILE CHANNEL parcels are distributed to the corresponding file 
-    * agglomeration objects.
+    * agglomeration objects, which are processors themselves.
     */
    private class CoreReceive extends LinkedBlockingQueue<TransmissionParcel> {
       boolean operating;
@@ -1479,14 +1522,14 @@ class ConnectionImpl implements Connection {
 	            } catch (SocketException e) {
 	               if (!closed) {
 	                  e.printStackTrace();
-	                  close(e, 2);
+	                  close(e, 3);
 	               }
 	               
 	            } catch (Throwable e) {
 	               if (!(e instanceof EOFException)) {
 	                  e.printStackTrace();
 	               }
-	               close(e, 2);
+	               close(e, 3);
 	            }
 	         }
 	         
@@ -1532,7 +1575,6 @@ class ConnectionImpl implements Connection {
       }
 
       private void signalReceiveDigestion (TransmissionParcel parcel) {
-         SendFileProcessor fileSender;
          
          // identify signal (analyse parcel)
          Signal signal = new Signal(parcel);
@@ -1563,10 +1605,7 @@ class ConnectionImpl implements Connection {
                long timeSent = pingSentMap.remove(objectID);
                PingEcho pingEcho = PingEchoImpl.create(ConnectionImpl.this, objectID, 
                      timeSent, (int)(System.currentTimeMillis() - timeSent));
-               pingEchoQueue.add(pingEcho);
-               
-               // interrupt output processor to take care of the event
-               outputProcessor.interrupt();
+               putObjectToReceiveQueue(new UserObject(pingEcho));
                
             } catch (Exception e) {
                e.printStackTrace();
@@ -1574,28 +1613,41 @@ class ConnectionImpl implements Connection {
          break;
          case BREAK:
             // if a file receptor is concerned ..
-        	 // TODO something strange here! discriminate sending/receiving target?
-        	 // TODO possibly a subtype of BREAK or a second BREAK signal required
-            FileAgglomeration fileQueue = fileReceptorMap.get(objectID);
-            if (fileQueue != null) {
-               int eventInfo = info == 2 ? 3 : 7;
-               fileQueue.dropTransfer(eventInfo, 0, 
-                     new RemoteTransferBreakException(signal.getText()));
-            }
-
-            // if a file sender is concerned ..
+        	boolean isIncomingFile = info == 6 || info == 4 || info == 2;
+        	
+        	// if incoming file is concerned ..
+        	if (isIncomingFile) {
+        		// drop transfer on the file-agglomeration
+                if (debug) {
+             	   System.out.println("-- (signal digestion) dropping INCOMING FILE TRANSFER (BREAK) " + objectID);
+                }
+	            FileAgglomeration fileQueue = fileReceptorMap.get(objectID);
+	            if (fileQueue != null) {
+	               int eventInfo = info == 2 ? 112 : info == 4 ? 106 : 114;
+	               fileQueue.dropTransfer(eventInfo, 0, 
+	                     new RemoteTransferBreakException(signal.getText()));
+	            }
+        	}
+        	
+            // if outgoing file is concerned ..
             else {
-               fileSender = fileSenderMap.get(objectID);
+        	   // drop transfer on the send-file-processor
+               if (debug) {
+            	   System.out.println("-- (signal digestion) dropping OUTGOING FILE TRANSFER (BREAK) " + objectID);
+               }
+               SendFileProcessor fileSender = fileSenderMap.get(objectID);
                if (fileSender != null) {
-                  int eventInfo = info == 1 ? 2 : 8;
+                  int eventInfo = info == 1 ? 109 : info == 3 ? 107 : 113;
                   fileSender.breakTransfer(eventInfo, 0, 
                       new RemoteTransferBreakException(signal.getText()));
+               } else {
+            	   System.out.println("   ERROR: send-file-processor not found!");
                }
             }
          break;
          case CONFIRM:
             // finish a file sender (OK)
-            fileSender = fileSenderMap.get(objectID);
+        	SendFileProcessor fileSender = fileSenderMap.get(objectID);
             if (fileSender != null) {
                fileSender.finishTransfer(true);
             }
@@ -1610,9 +1662,9 @@ class ConnectionImpl implements Connection {
                
                // finish a file receptor (Failure)
             } else if (info == 2) {
-               FileAgglomeration fileRec = fileReceptorMap.get(objectID);
-               if (fileRec != null) {
-                  fileRec.dropTransfer(5, 0, null);
+               FileAgglomeration fileQueue = fileReceptorMap.get(objectID);
+               if (fileQueue != null) {
+            	   fileQueue.dropTransfer(104, 0, null);
                }
             }
          break;
@@ -1819,28 +1871,6 @@ class ConnectionImpl implements Connection {
       }
    }
 
-   /** Class to wrap an object bundled with its identifier number. 
-    */ 
-   private static class ObjectWrapper  {
-      private Object object;
-      private long objectNr;
-      
-      public ObjectWrapper (Object object, long objectId) {
-         if (object == null)
-            throw new NullPointerException();
-         this.object = object;
-         this.objectNr = objectId;
-      }
-      
-      Object getObject () {
-         return object;
-      }
-      
-      long getObjectNr () {
-         return objectNr;
-      }
-   }
-   
    /** Class to contain the local connection parameters and administer
     * local services on parameter value change.
     */
@@ -2005,7 +2035,7 @@ class ConnectionImpl implements Connection {
                   
                   // if agglomeration not found, create a new one
                   if (isNewObject) {
-                     agglom = new ObjectAgglomeration(ConnectionImpl.this, objectNr);
+                     agglom = new ObjectAgglomeration(ConnectionImpl.this, objectNr, parcel.getPriority());
                   }
                   
                   // let agglomeration digest received parcel
@@ -2014,8 +2044,7 @@ class ConnectionImpl implements Connection {
                   // if object is finished
                   if (agglom.objectReady()) {
                      // put result it into output queue 
-                     objectReceiveQueue.put(new ObjectWrapper(agglom.getObject(), objectNr));
-                     outputProcessor.interrupt();
+                     putObjectToReceiveQueue(new UserObject(agglom.getObject(), objectNr, agglom.getPriority()));
                      if (debug) {
                     	 System.out.println("--- OBJECT received (deserialised) to Queue: " + objectNr);
                      }
@@ -2041,7 +2070,7 @@ class ConnectionImpl implements Connection {
                } catch (InterruptedException e) {
                } catch (Throwable e) {
                   e.printStackTrace();
-                  close(e, 1);
+                  close(e, 4);
                }
             }
          }
@@ -2064,25 +2093,55 @@ class ConnectionImpl implements Connection {
       
       private static class UserObject implements Comparable<UserObject> {
     	  long objectID;
-    	  Object userObject;
+    	  Object object;
     	  SendPriority priority;
     	  
     	  public UserObject (Object object, long id, SendPriority priority) {
     		  objectID = id;
-    		  userObject = object;
+    		  this.object = object;
     		  this.priority = priority;
     	  }
 
+    	  public UserObject (PingEcho echo) {
+    		  objectID = echo.pingId();
+    		  this.object = echo;
+    		  this.priority = SendPriority.Normal;
+    	  }
+
+  	   Object getObject () {
+		   return object;
+	   }
+
+	   long getObjectNr () {
+		   return objectID;
+	   }
+
+		/** We compare natural for ordering a <code>PriorityQueue</code>,
+		 * i.e. the lower element is the priorised element. 
+		 */
 		@Override
 		public int compareTo (UserObject obj) {
-			if (obj == null)
-				throw new NullPointerException();
-			
+	
+			// we are higher if the compare is a PingEcho and we are not
+			if (obj.object instanceof PingEcho) {
+				if (!(object instanceof PingEcho)) {
+					return 1;
+				}
+	
+			// we are lower if we are a PingEcho and the compare is not
+			} else {
+				if (object instanceof PingEcho) {
+					return -1;
+				}				
+			}
+
+			// compare priority class
 			if (priority.ordinal() < obj.priority.ordinal()) return -1;
 			if (priority.ordinal() > obj.priority.ordinal()) return +1;
-			if (objectID < obj.objectID) return -1;
-			if (objectID > obj.objectID) return +1;
-			return 0;
+
+			// otherwise compare object numbers
+			return objectID < obj.objectID ? -1 : 
+				   objectID > obj.objectID ? +1 : 0;
 		}
 
 		@Override
@@ -2181,7 +2240,7 @@ class ConnectionImpl implements Connection {
 	        	 long sendTime = connection.aliveSignalTask.getSendTime();
 	        	 long delta = System.currentTimeMillis() - confirmedTime;
 	        	 if (sendTime > 0 && delta > period-200) {
-	        		 connection.close(new ConnectionTimeoutException("ALIVE signal timeout"), 99);
+	        		 connection.close(new ConnectionTimeoutException("ALIVE signal timeout"), 5);
 	        	 }
 	         }
 	      }

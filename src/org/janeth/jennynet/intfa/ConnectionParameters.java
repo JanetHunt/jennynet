@@ -78,6 +78,27 @@ public interface ConnectionParameters extends Cloneable {
     */
    public void setParcelQueueCapacity (int parcelQueueCapacity);
 
+   /** Returns the maximum size of any serialisation of an object which is
+    * to be sent over the network. The default value is 100 Mega.
+    * <p><small>Encountering a size overflow
+    * during send or receive operations causes the connection closed.
+    * </small>
+    * 
+    * @return int maximum object serialisation size
+    */
+   public int getMaxSerialisationSize ();
+   
+   /** Sets the maximum size of any serialisation of an object which is
+    * to be sent over the network. The default value is 100 Mega.
+    * <p><small>Encountering a size overflow
+    * during send or receive operations causes the connection closed.
+    * </small>
+    * 
+    * @param size int maximum object serialisation size
+    */
+   public void setMaxSerialisationSize (int size);
+   
+   
    /** Returns the queue capacity for sending objects over
     * the net. Attempts to send an object 
     * with a full send queue results in an exception thrown.
@@ -162,9 +183,10 @@ public interface ConnectionParameters extends Cloneable {
 
    /** Returns the root directory (TRANSFER_ROOT_PATH) for 
     * incoming file transmissions. Defaults to null. 
-    * <p><small>Null implies that received file transmissions will be 
-    * stored and reflected as temporary files only. For mechanics of file
-    * transfers see the user manual.</small>
+    * <p><small>Null implies that only file transmissions without path target
+    * can be received. In this case file transmissions with target are aborted
+    * and cause a transmission event of type FILE_FAILED in the 
+    * <code>ConnectionListener</code>.</small>
     * 
     * @return File directory or null
     */
@@ -172,12 +194,13 @@ public interface ConnectionParameters extends Cloneable {
 
    /** Sets the root directory (TRANSFER_ROOT_PATH) for incoming 
     * file transmissions. If not null, the parameter must be 
-    * an existing directory.
-    * <p><small>Null implies that received file transmissions will be stored
-    * and reflected as temporary files only. For mechanics of file transfers
-    * see the user manual.</small>
+    * an existing directory. The default value is null.
+    * <p><small>Null implies that only file transmissions without path target
+    * can be received. In this case file transmissions with target are aborted
+    * and cause a transmission event of type FILE_FAILED in the 
+    * <code>ConnectionListener</code>.</small>
     * 
-    * @param dir File directory
+    * @param dir File directory or null
     * @throws IllegalArgumentException if parameter is not a directory
     * @throws IOException if the path cannot be verified (canonical name)
     */

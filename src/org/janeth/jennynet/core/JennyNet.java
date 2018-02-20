@@ -39,7 +39,8 @@ public class JennyNet {
 //   public static final int SOCKET_TIMEOUT = 1000;
 
    /** Maximum buffer size for object serialisation. */
-   public static final int MAX_SERIALBUFFER_SIZE = 10000000; // 10 MB
+   public static final int DEFAUL_MAX_SERIALISE_SIZE = 100000000; // 100 Mega
+   public static final int MIN_SERIALISE_SIZE = 10000; 
    public static final int DEFAULT_SERIALISATION_METHOD = 0; // code number KRYO_
    public static final int MAX_TRANSMISSION_PARCEL_SIZE = 1024*256; 
    public static final int MIN_TRANSMISSION_PARCEL_SIZE = 1024; 
@@ -579,6 +580,15 @@ public class JennyNet {
 
 	public static void setDefaultTransmissionTempo (int tempo) {
 		parameters.setTransmissionSpeed(tempo);
+	}
+
+	public static int getDefaultMaxSerialiseSize() {
+        return parameters == null ? DEFAUL_MAX_SERIALISE_SIZE : 
+        	parameters.getMaxSerialisationSize();
+	}
+
+	public static void setDefaultMaxSerialiseSize(int size) {
+		parameters.setMaxSerialisationSize(size);
 	}
 
 

@@ -32,6 +32,7 @@ class ConnectionParametersImpl implements Cloneable, ConnectionParameters {
    private int idleThreshold = JennyNet.getIdleThreshold();
    private int idleCheckPeriod = JennyNet.getDefaultIdleCheckPeriod();
    private int transmissionTempo = JennyNet.getDefaultTransmissionTempo();
+   private int maxSerialiseSize = JennyNet.getDefaultMaxSerialiseSize();
 
    public ConnectionParametersImpl() {
    }
@@ -222,6 +223,16 @@ class ConnectionParametersImpl implements Cloneable, ConnectionParameters {
 	@Override
 	public void setTransmissionSpeed(int tempo) {
 		transmissionTempo = Math.max(-1, tempo);
+	}
+
+	@Override
+	public int getMaxSerialisationSize() {
+		return maxSerialiseSize;
+	}
+
+	@Override
+	public void setMaxSerialisationSize(int size) {
+		maxSerialiseSize = Math.max(size, JennyNet.MIN_SERIALISE_SIZE);
 	}
 
 }
