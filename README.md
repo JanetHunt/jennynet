@@ -1,18 +1,17 @@
 JennyNet
 ========
 
-Java client/server networking layer based on object serialisation and multi-threading.
+Java client/server networking layer based on Kryo object serialisation and multi-threading.  
+Net workhorse especially useful for multi-processor environments.
 Status: Alpha Results
 
-Project Wiki [on Sourceforge](http://sourceforge.net/p/jennynet/wiki/Home/)
-
-[User Manual](http://sourceforge.net/p/jennynet/wiki/User%20Manual/)
-
-[Discussion](http://sourceforge.net/p/jennynet/discussion/)
+[Project Wiki](https://github.com/JanetHunt/jennynet/wiki)  
+[User Manual](https://github.com/JanetHunt/jennynet/wiki/User-Manual)  
+[Discussion](http://sourceforge.net/p/jennynet/discussion/)  
 
 -----------------
 
-20.02.2018  Release 0.2.0 Alpha with improved functions; completed implementation
+20.02.2018  Release 0.2.0 Alpha with improved functions; completed implementation  
             and advanced testing of object and file transmissions.
 
 	With version 0.2 object sending and file transfers as well as building
@@ -28,7 +27,7 @@ Project Wiki [on Sourceforge](http://sourceforge.net/p/jennynet/wiki/Home/)
 	exception of methods and events concerning the IDLE state, which is not
 	yet implemented. Testing for these methods is not complete.
 
-21.10.2017  Release 0.1.0 Alpha version with all functions implemented; some
+21.10.2017  Release 0.1.0 Alpha version with all functions implemented; some  
             may be error prone; some testing has been done. Can be used for
             proto-typing and testing.
 
