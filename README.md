@@ -11,6 +11,10 @@ Status: Alpha Results
 
 -----------------
 
+21.03.2018  working commit: updated serialisation libraries to Kryo 4.0.1;  
+            object instantiation supplemented for all classes which implement  
+            the "Serializable" interface.
+
 20.02.2018  Release 0.2.0 Alpha with improved functions; completed implementation  
             and advanced testing of object and file transmissions.
 

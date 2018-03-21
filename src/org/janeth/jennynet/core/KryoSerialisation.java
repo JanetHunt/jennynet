@@ -7,6 +7,7 @@ import java.util.List;
 import org.janeth.jennynet.intfa.Connection;
 import org.janeth.jennynet.intfa.Serialization;
 import org.janeth.jennynet.util.Util;
+import org.objenesis.strategy.SerializingInstantiatorStrategy;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
@@ -17,7 +18,17 @@ public class KryoSerialisation implements Cloneable, Serialization {
    
    private Connection connection;
    private LinkedHashMap<Class, Class> classMap = new LinkedHashMap<Class, Class>();
-   private Kryo kryo = new Kryo();
+   private Kryo kryo = createKryo();
+   
+   private static Kryo createKryo () {
+	   Kryo kryo = new Kryo();
+	   kryo.setInstantiatorStrategy(new Kryo.DefaultInstantiatorStrategy(
+			   new SerializingInstantiatorStrategy()));
+	   return kryo;
+   }
+   
+   public KryoSerialisation () {
+   }
    
    @Override
    public Serialization copy() {
@@ -26,7 +37,7 @@ public class KryoSerialisation implements Cloneable, Serialization {
          // make a deep clone of this serialisation object
          c = (KryoSerialisation)super.clone();
          c.classMap = (LinkedHashMap)classMap.clone();
-         c.kryo = new Kryo();
+         c.kryo = createKryo();
          for (Class type : classMap.keySet()) {
             c.kryo.register(type);
          }
