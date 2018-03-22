@@ -133,7 +133,7 @@ public interface ConnectionParameters extends Cloneable {
     * and no ALIVE_ECHO timeout control performed on the connection. This value 
     * can only be set before a connection starts and defaults to 20,000.
  
-    * <p><small>The layer ensures a minimum of 1,000 milliseconds and a
+    * <p><small>The layer ensures a minimum of 10,000 milliseconds and a
     * maximum of 300,000, automatically correcting arguments except zero. 
     * The internal value ALIVE_TIMEOUT determines the period by which an
     * ALIVE_ECHO has to occur after ALIVE_SIGNAL is sent, otherwise the

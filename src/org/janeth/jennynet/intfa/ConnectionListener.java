@@ -40,14 +40,26 @@ public interface ConnectionListener
    public void idle (Connection connection, boolean idle);
 
    /** Called when the remote end is no longer connected. 
-    * This indicates that the given connection is out of use; 
-    * a closed connection cannot be reconnected.
+    * This indicates that the given connection has gone out of use; 
+    * a disconnected {@code Connection} cannot be re-connected.
     * 
     * @param connection <code>Connection</code>  source connection
     * @param cause int code for cause of disconnection if available
     * @param message String message about cause of disconnection if available
     */
    public void disconnected (Connection connection, int cause, String message);
+
+   /** Called when the connection has been closed for user operations.
+    * In the CLOSED state incoming object events are still possible
+    * until the DISCONNECTED state is reached.
+    * This call indicates that the given connection is no more available
+    * for outgoing data communication. A closed connection cannot be re-opened.
+    * 
+    * @param connection <code>Connection</code>  source connection
+    * @param cause int code for cause of disconnection if available
+    * @param message String message about cause of disconnection if available
+    */
+   public void closed (Connection connection, int cause, String message);
 
    /** Called when an object has been received from the remote end of the
     *  connection. The given object is available here in same data state and

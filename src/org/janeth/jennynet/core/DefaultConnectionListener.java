@@ -20,6 +20,10 @@ public class DefaultConnectionListener implements ConnectionListener {
    }
 
    @Override
+   public void closed(Connection connection, int cause, String message) {
+   }
+
+   @Override
    public void idle(Connection connection, boolean idle) {
    }
 

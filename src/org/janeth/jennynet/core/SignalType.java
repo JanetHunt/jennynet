@@ -9,7 +9,8 @@ public enum SignalType {
    CONFIRM,
    FAIL,
    PING,
-   ECHO
+   ECHO,
+   CLOSE
 ;
 
    public static SignalType valueOf (int ordinal) {
@@ -23,6 +24,7 @@ public enum SignalType {
       case 5 : sp = SignalType.FAIL; break;
       case 6 : sp = SignalType.PING; break;
       case 7 : sp = SignalType.ECHO; break;
+      case 8 : sp = SignalType.CLOSE; break;
       default: throw new IllegalArgumentException("undefined ordinal value: " + ordinal);
       }
       return sp;

@@ -22,10 +22,10 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.janeth.jennynet.exception.ClosedConnectionException;
 import org.janeth.jennynet.exception.ConnectionTimeoutException;
@@ -42,6 +42,7 @@ import org.janeth.jennynet.intfa.Serialization;
 import org.janeth.jennynet.intfa.TransmissionEvent;
 import org.janeth.jennynet.intfa.TransmissionEvent.TransmissionEventType;
 import org.janeth.jennynet.util.ArraySet;
+import org.janeth.jennynet.util.MutableBoolean;
 import org.janeth.jennynet.util.SchedulableTimerTask;
 import org.janeth.jennynet.util.Util;
 
@@ -50,15 +51,19 @@ import org.janeth.jennynet.util.Util;
  */
 class ConnectionImpl implements Connection {
    
-   protected static boolean debug = false;
+   protected static final boolean debug = false;
+   
+   /** Internal type marker for events dispatched to IConnectionListeners */
+   protected enum ConnectionEventType {
+      object, connect, idle, disconnect, close 
+   }
    
    /** Internal static Timer for time-control tasks. */
    protected static Timer timer = new Timer();
-   /** Internal type marker for events dispatched to IConnectionListeners */
-   protected enum ConnectionEventType {
-      object, connect, idle, disconnect 
-   }
-   
+
+   /** static parcel sending queue and processor */
+   private static CoreSend coreSend;
+
    // parametric
    private UUID uuid = UUID.randomUUID();
    private byte[] shortId = Util.makeShortId(uuid);
@@ -77,7 +82,7 @@ class ConnectionImpl implements Connection {
    private Map<Long, Long> pingSentMap; // maps ping-id -> time sent
    private Map<Object, SendFileProcessor> fileSenderMap; 
    private Map<Long, FileAgglomeration> fileReceptorMap; 
-   private Map<Long, ObjectAgglomeration> objectReceptorMap; 
+   private Map<Long, ObjectAgglomeration> objectReceptorMap;
 
    // processors
    private InputProcessor inputProcessor;
@@ -85,8 +90,7 @@ class ConnectionImpl implements Connection {
    private ReceiveProcessor receiveProcessor;
    
    // data queues sending
-   private CoreSend coreSend;  // also a processor!
-   private PriorityBlockingQueue<UserObject> inputQueue;
+   private PriorityBlockingQueue<ObjectSendSeparation> inputQueue;
    
    // data queues receiving
    private CoreReceive coreReceive;
@@ -96,22 +100,38 @@ class ConnectionImpl implements Connection {
    private AliveSignalTimerTask aliveSignalTask;
    private AliveEchoControlTask aliveTimeoutTask;
    private CheckIdleTimerTask checkIdleTask;
+   private ErrorObject requestedCloseError;
+   private ErrorObject localCloseError;
    private Object listenerDispatchLock = new Object();
-   private long objectSerialCounter;
+   private Object sendAccessSync = new Object();
+   private MutableBoolean sendLock = new MutableBoolean(false);
+   
+   private AtomicLong objectSerialCounter = new AtomicLong();
+   private AtomicLong currentSendLoad = new AtomicLong();
    private long pingSerialCounter;
    private long exchangedDataVolume;
+   private long sendLoadLimit;
+   private long lastSendTime;
    private int transmitSpeed = -1;
+   
    private boolean isCheckIdleState;
    protected boolean fixedTransmissionSpeed;
+   private boolean sendingOff;
    private boolean closed;
+   private boolean outgoingClosed;
    private boolean connected;
    private boolean isIdle;
 
    
    public ConnectionImpl () {
+	   // verify static members
+	   if (coreSend == null || !coreSend.isAlive()) {
+		   coreSend = new CoreSend();
+	   }
    }
 
    public ConnectionImpl (Socket socket) throws IOException {
+	  this();
       start(socket);
    }
 
@@ -153,7 +173,37 @@ class ConnectionImpl implements Connection {
       }
    }
 
-   @Override
+   /** Decrements the value of current send-load by the given number
+    * of bytes. This unlocks any waiting threads on the send-lock due
+    * if send-load falls below the limit as a result of this operation.
+    * 
+    * @param dataSize long
+    * @throws IllegalArgumentException if argument is negative
+    */
+   private void decrementSendLoad (long dataSize) {
+	   if (dataSize < 0)
+		   throw new IllegalArgumentException("illegal negative data size");
+	   
+	  long value = currentSendLoad.addAndGet(-dataSize);
+	  if (value < sendLoadLimit) {
+		  notifySendLock();
+	  }
+   }
+
+   /** Increments the value of current send-load by the given number
+    * of bytes.
+    * 
+    * @param dataSize long
+    * @throws IllegalArgumentException if argument is negative
+    */
+   private void incrementSendLoad (long dataSize) {
+	   if (dataSize < 0)
+		   throw new IllegalArgumentException("illegal negative data size");
+	   
+	   currentSendLoad.addAndGet(dataSize);
+   }
+   
+@Override
    public UUID getUUID() {
       return uuid;
    }
@@ -238,9 +288,18 @@ class ConnectionImpl implements Connection {
       return Math.max(getLastSendTime(), getLastReceiveTime());
    }
 
+   /** Returns the current amount of unsent scheduled send data.
+    * 
+    * @return long unsent data volume
+    */
+   @Override
+   public long getCurrentSendLoad () {
+	  return currentSendLoad.get();
+   }
+ 
    @Override
    public long getLastSendTime() {
-      return coreSend == null ? 0 : coreSend.getLlastTransmitTime();
+      return lastSendTime;
    }
 
    @Override
@@ -263,7 +322,10 @@ class ConnectionImpl implements Connection {
 
     	  // assign object number and add to input queue
     	  objNr = getNextObjectNr();
-    	  inputQueue.add(new UserObject(object, objNr, priority));
+    	  inputQueue.add(new ObjectSendSeparation(object, objNr, priority));
+    	  if (debug) {
+    		  prot("xx adding new user object (" + objNr + ") to send-queue, --> " + getRemoteAddress());
+    	  }
       }
       return objNr;
    }
@@ -300,25 +362,107 @@ class ConnectionImpl implements Connection {
    }
    
    /** Sends a signal to remote. This queues the signal object for sending
-    * but does not check for connection readiness.
+    * but does not check for connection readiness. This queues 
+    * without checking of current send-load because signal are always preferred
+    * and always possible.
     * 
     * @param signal <code>Signal</code>
     */
    protected void sendSignal (Signal signal) {
+	  // don't send if socket down
+	  if (!connected) return;
+	   
       if (debug) {
-    	  System.out.println("-- SIGNAL SND (ob " + signal.getObjectID() + "): " + signal.getSigType() +
+    	  prot("-- SIGNAL SND (ob " + signal.getObjectID() + "): " + signal.getSigType() +
     			  " (i " + signal.getInfo() + ") to " + getRemoteAddress() + ", [" + getLocalAddress() + "]");
       }
       String text = signal.getText();
       if (debug && text != null) {
-         System.out.println("   Text = ".concat(text));
+         prot("   Text = ".concat(text));
       }
 
       if (coreSend != null) {
     	  coreSend.add(signal);
+		  lastSendTime = System.currentTimeMillis();
       }
    }
 
+   /** Puts a transmit-parcel into coreSend processor. This method updates and
+    * deals with the current send-load of this connection, handles baud-delay
+    * (TEMPO) and enters WAIT-state if the conditions require it. This method 
+    * may block for a lengthy time.
+    *  
+    * @param parcel {@code TransmissionParcel}
+    * @throws InterruptedException
+    */
+   protected void queueParcelForSending (TransmissionParcel parcel) throws InterruptedException {
+	   synchronized (sendAccessSync) {
+		  // don't send if socket down
+		  if (!connected) return;
+			   
+		   // get last send time
+		   long markTime = getLastSendTime();
+		   if (markTime == 0) {
+		 	    markTime = System.currentTimeMillis();
+		   }
+		   
+		   // baud delay solution in relation to last-send-time
+		   delay_baud(parcel, markTime, "writeToSocket");
+		   lastSendTime = System.currentTimeMillis();
+		
+		   // queue parcel into core-send (unchecked)
+		   coreSend.put(parcel);
+		   incrementSendLoad(parcel.getSerialisedLength());
+		
+		   // send-queue blocking behaviour dependent on unsent data load
+		   // explain: we don't have input blocking in InputProcessor (queue)
+		   // and we may have endless amounts of parcels coming from FileSendProcessor
+		   checkAndPerformSendWait();
+	   }
+   }
+
+   /** Notifies the send-lock to release any waiting threads. This performs 
+    * conditional to the current state of sendLock, which is a MutableBoolean.
+    */
+   private void notifySendLock () {
+	   //  There is a tiny false operation chance as the value checking
+	   //  occurs outside of the synchronised block, but this is seen harmless as 
+	   //  the worst case is a slipped through data parcel for sending. The locking
+	   //  system corrects itself through normal send operation.
+	   
+	  if (sendLock.getValue()) {
+		  synchronized(sendLock) {
+			 sendLock.notifyAll();
+			 sendLock.setValue(false);
+		  }
+	  }
+   }
+
+   /** Performs waiting on the send-lock if the conditions require it and
+    * until the conditions are met to release it. This is not secured against
+    * sporadic interrupts. Does nothing if the conditions are not met.
+    * <p>Waiting is entered either when sending is switched OFF (via TEMPO)
+    * or the current send-load for this connection is exceeding the limit. 
+    * The release of the lock is triggered by coreSend (after send-load 
+    * is low enough) or via setTempo() when sending is switched ON.
+    * 
+    * @throws InterruptedException
+    */
+   private void checkAndPerformSendWait () throws InterruptedException {
+	  do {
+		 if (getCurrentSendLoad() < sendLoadLimit && !sendingOff) {
+			break;
+		 }
+		 synchronized(sendLock) {
+			 if (debug) {
+				 prot("-- (checkAndPerformSendWait) entering WAIT STATE -- sending blocked");
+			 }
+			 sendLock.setValue(true);
+			 sendLock.wait();
+		 }
+	  } while (true);
+   }
+   
    /** Inserts the specified user object (wrapper) into the outgoing queue. 
    * This method may block until space is made available in the queue. The
    * queue may not become larger than <code>
@@ -337,6 +481,7 @@ class ConnectionImpl implements Connection {
 		} while (true);
 
 		// put parcel into sorting queue
+		Thread.interrupted();
 		objectReceiveQueue.put(object);
    }
    
@@ -347,7 +492,7 @@ class ConnectionImpl implements Connection {
 	  
       long pingId = ++pingSerialCounter;
       pingSentMap.put(pingId, System.currentTimeMillis());
-      sendSignal( Signal.newPingSignal(pingId) );
+      sendSignal( Signal.newPingSignal(this, pingId) );
       return pingId;
    }
 
@@ -356,18 +501,18 @@ class ConnectionImpl implements Connection {
    public void setTempo (int baud) {
 	  checkConnected();
       if (debug) {
-    	  System.out.println(baud > -1 ? ("-- setting TEMPO to " + baud + " bytes/sec")
+    	  prot(baud > -1 ? ("-- setting TEMPO to " + baud + " bytes/sec")
     	  : "-- setting TEMPO to NO LIMIT");
       }
 
 	  // adjust connection settings
 	  transmitSpeed = baud;
-      if (coreSend != null) {
-    	  coreSend.setSending(baud != 0);
+      if (inputProcessor != null) {
+    	  inputProcessor.setSending(baud != 0);
       }
 	  
 	  // signal remote about current baud setting
-      Signal tempo = Signal.newTempoSignal(baud);
+      Signal tempo = Signal.newTempoSignal(this, baud);
       sendSignal(tempo);
    }
 
@@ -432,7 +577,7 @@ class ConnectionImpl implements Connection {
     * @throws IlllegalArgumentException if alivePeriod is negative
     */
    protected void setAlivePeriod (int alivePeriod) {
-//     System.out.println("-- (ConnectionImpl.start) setting ALIVE period " + par.getAlivePeriod() 
+//     prot("-- (ConnectionImpl.start) setting ALIVE period " + par.getAlivePeriod() 
 //		+ ",  " + toString());
       AliveSignalTimerTask.createNew(this, alivePeriod);
       int controlPeriod = alivePeriod == 0 ? 0 : 
@@ -527,10 +672,13 @@ class ConnectionImpl implements Connection {
       ConnectionParameters par = getParameters();
 
       // data inits
-      objectSerialCounter = 0;
+      objectSerialCounter.set(0);;
       pingSerialCounter = 0;
       exchangedDataVolume = 0;
+      currentSendLoad.set(0);
       transmitSpeed = par.getTransmissionSpeed();
+      sendLoadLimit = Math.max(parameters.getParcelQueueCapacity() *
+     		 	parameters.getTransmissionParcelSize() / 2, 16*1024);
       
       // create hashtables and services
       fileSenderMap = new Hashtable<Object, SendFileProcessor>(); 
@@ -539,10 +687,9 @@ class ConnectionImpl implements Connection {
       pingSentMap = new Hashtable<Long, Long>();
 
       // create data queues
-      inputQueue = new PriorityBlockingQueue<UserObject>();
+      inputQueue = new PriorityBlockingQueue<ObjectSendSeparation>();
       objectReceiveQueue = new PriorityBlockingQueue<UserObject>();
       coreReceive = new CoreReceive();
-      coreSend = new CoreSend();
       
       // create ALIVE signal sending if defined
       // also starts ALIVE-ECHO timeout control task 
@@ -560,16 +707,73 @@ class ConnectionImpl implements Connection {
       inputProcessor.start();
    }
    
+   /** Called when this connection has been marked as CLOSED and is
+    * in the process of shutdown. At this point the socket may
+    * still be operative and will eventually die.
+    * 
+    * @param error ErrorObject error associated with shutdown; may be null
+    */
+   protected void connectionClosing (ErrorObject error) {
+   }
+   
    @Override
    public void close() {
-      close(null, 0);
+      if (closed) return;
+      if (debug) {
+    	  prot("xxx USER closes connection " + this);
+      }
+      close(null);
    }
       
    protected void close (Throwable ex, int info) {
-      if (closed) return;
-      closed = true;
+	   close(new ErrorObject(info, ex.toString()));
+   }
+   
+   protected void close (ErrorObject error) {
+      String estr = error == null ? "null" : (error.info + ", msg=" + error.message);
+      if (debug) {
+    	  prot("-- (close) closing connection w/ error " + estr + ", " + this);
+    	  prot("-- (close) terminating incoming data chain " + this);
+      }
+	  
+      // terminate incoming data chain threads
+      if (coreReceive != null) {
+          coreReceive.terminate();
+       }
 
-      // terminate structures
+      if (receiveProcessor != null) {
+          receiveProcessor.terminate();
+       }
+      
+      if (outputProcessor != null) {
+          outputProcessor.terminateImmediately();
+      }
+       
+      closeCentral(error);
+      
+	   // close our only outgoing processor
+	   if (inputProcessor != null) {
+         inputProcessor.terminate(error);
+      }
+   }
+
+   /** Closes this connection's capability to send to remote and issues
+    * a CLOSED event to the user via ConnectionListener.
+    * 
+    * @param error {@code ErrorObject} to be shown in event to the user
+    */
+   private void closeCentral (ErrorObject error) {
+      if (closed) return;
+
+      // closes con against further user input
+      closed = true;
+	  localCloseError = error;
+      if (debug) {
+    	  prot("-- (closeCentral) closing interface, subsidiary + ALIVE systems, " + this);
+      }
+      connectionClosing(error);
+      
+      // terminate ALIVE structures
       if (aliveSignalTask != null) {
          aliveSignalTask.cancel();
       }
@@ -591,38 +795,43 @@ class ConnectionImpl implements Connection {
     		  agg.dropTransfer(114, 5, null);
     	  }
       }
-      
-      // terminate our processing threads
-      if (inputProcessor != null) {
-          inputProcessor.terminate();
-       }
-       
-      if (outputProcessor != null) {
-          outputProcessor.terminate();
-       }
-       
-      if (receiveProcessor != null) {
-          receiveProcessor.terminate();
-       }
-      
-      if (coreReceive != null) {
-          coreReceive.terminate();
-       }
 
-      if (coreSend != null) {
-    	  String msg = ex == null ? null : ex.toString(); 
-          coreSend.terminate(new ErrorObject(info, msg));
-      }
-      
-      // clear incoming data queues
-      if (objectReceiveQueue != null) {
-    	  objectReceiveQueue.clear();
-      }
-      if (objectReceptorMap != null) {
-    	  objectReceptorMap.clear();
-      }
+      // issue a connection-closed event w/ error-object to user
+      fireConnectionEvent(ConnectionEventType.close, 
+    		  error == null ? 0 :error.info, 
+    		  error == null ? null : error.message);
    }
+   
+   /** Radically closes the outgoing data chain of this connection
+    * (disregarding lingering send-data) and then closes the
+    * connection to the user. 
+    * 
+    * @param error {@code ErrorObject} info to be given to the user
+    */
+   private void closeOutgoingChain (ErrorObject error) {
+       // closes further sending of data (coreSend will ignore
+	   // any further emerging data parcels)
+	   outgoingClosed = true;
+       if (debug) {
+    	  prot("-- (closeOutgoingChain) closing outgoing data chain" + this);
+       }
 
+	   // close our only outgoing processor
+	   if (inputProcessor != null) {
+          inputProcessor.terminateImmediately();
+       }
+	       
+	   closeCentral(error);
+   }
+   
+   /** Closes the network socket associated with this connection. 
+    * A connection-event DISCONNECTED is issued by this method 
+    * if the connection was active; optional error information can be 
+    * included into this event. Does nothing if this connection is
+    * already disconnected.
+    *  
+    * @param error {@code ErrorObject} error info block; may be null
+    */
    private void closeSocket (ErrorObject error) {
 	  if (!connected) return;
       try {
@@ -634,10 +843,10 @@ class ConnectionImpl implements Connection {
              int info = error == null ? 0 : error.info;
              fireConnectionEvent(ConnectionEventType.disconnect, info, message);
              if (debug) {
-	             System.out.println("----- Connection Closed ----- " + getLocalAddress() + "  --->  " 
+	             prot("---- Connection Closed (closeSocket) --- " + getLocalAddress() + "  --->  " 
 	                   + getRemoteAddress() );
 	             if (message != null || info != 0) {
-	            	 System.out.println("-----    on error: code " + info + ", msg: " + message);
+	            	 prot("----    on error: code " + info + ", msg: " + message);
 	             }
              }
           }
@@ -743,32 +952,51 @@ class ConnectionImpl implements Connection {
       if (type == null)
          throw new NullPointerException();
       
-      synchronized (listenerDispatchLock ) {
-         // dispatch event to registered listeners
-         ConnectionListener[] array = getListeners();
-         
-         switch (type) {
-         case connect:
-            for (ConnectionListener i : array) {
-               i.connected(this);
-            }
-            break;
-         case disconnect:
-            for (ConnectionListener i : array) {
-               i.disconnected(this, info, message);
-            }
-            break;
-         case idle:
-            for (ConnectionListener i : array) {
-               i.idle(this, isIdle);
-            }
-            break;
-         default:
-            throw new UnsupportedOperationException("not ready for type: ".concat(type.toString()));
-         }
-      }
+      try {
+	      synchronized (listenerDispatchLock ) {
+	         // dispatch event to registered listeners
+	         ConnectionListener[] array = getListeners();
+	         
+	         switch (type) {
+	         case connect:
+	            for (ConnectionListener i : array) {
+	               i.connected(this);
+	            }
+	            break;
+	         case disconnect:
+	            for (ConnectionListener i : array) {
+	               i.disconnected(this, info, message);
+	            }
+	            break;
+	         case close:
+		            for (ConnectionListener i : array) {
+		               i.closed(this, info, message);
+		            }
+		            break;
+	         case idle:
+	            for (ConnectionListener i : array) {
+	               i.idle(this, isIdle);
+	            }
+	            break;
+	         default:
+	            throw new UnsupportedOperationException("not ready for type: ".concat(type.toString()));
+	         }
+	      }
+
+	  // recover from user thrown exception
+ 	  } catch (Throwable e) {
+		  e.printStackTrace();
+	  }
    }
 
+   /** Prints the given protocol text to the console.
+    * 
+    * @param text String 
+    */
+   protected void prot (String text) {
+	   System.out.println("(" + getLocalAddress().getPort() + ") " + text);
+   }
+   
    @Override
    public InetSocketAddress getRemoteAddress() {
       return socket == null ? null :
@@ -806,30 +1034,14 @@ class ConnectionImpl implements Connection {
 		return transmitSpeed;
 	}
      
-   protected void writeToSocket (TransmissionParcel parcel) throws IOException {
-      if (debug) {
-//         System.out.println("--- SEND: writing parcel to socket: " + socket.getPort());
-         parcel.report(1, System.out);
-      }
-      
-      long markTime = getLastSendTime();
-      if (markTime == 0) {
-    	  markTime = System.currentTimeMillis();
-      }
-      
-      parcel.writeObject(socketOutput);
-      socketOutput.flush();
-      delay_baud(parcel, markTime, "writeToSocket");
-   }
-   
    protected TransmissionParcel readParcelFromSocket () throws IOException {
-      long markTime = getLastReceiveTime();
-      if (markTime == 0) {
-    	  markTime = System.currentTimeMillis();
-      }
+//      long markTime = getLastReceiveTime();
+//      if (markTime == 0) {
+//    	  markTime = System.currentTimeMillis();
+//      }
       
-       TransmissionParcel parcel = TransmissionParcel.readParcel(socketInput);
-       delay_baud(parcel, markTime, "readParcelFromSocket");
+       TransmissionParcel parcel = TransmissionParcel.readParcel(this, socketInput);
+//       delay_baud(parcel, markTime, "readParcelFromSocket");
        
        if (debug) {
           parcel.report(0, System.out);
@@ -852,7 +1064,7 @@ class ConnectionImpl implements Connection {
     	  int delay = (int)(shallLast - hasTaken);
     	  if (delay > 0) {
               if (debug) {
-            	  System.out.println("--- (" + function + ") : BAUD delay performing " 
+            	  prot("--- (" + function + ") : BAUD delay performing " 
             		  + delay + " ms sleep, " + "consumed " + hasTaken 
             		  + ", obj " + parcel.getObjectID());
               }
@@ -868,7 +1080,7 @@ class ConnectionImpl implements Connection {
     * @return long serial number
     */
    protected long getNextObjectNr() {
-      return ++objectSerialCounter;
+      return objectSerialCounter.incrementAndGet();
    }
 
    protected Socket getSocket () {
@@ -877,11 +1089,14 @@ class ConnectionImpl implements Connection {
    
 // --------------- inner classes ----------------   
    
-   /** This thread performs serialisation of user input objects and puts them
-    * into the core-send parcel queue.
+   /** This thread performs serialisation of user input objects, segments
+    * the serialisation into sending parcels and puts them into the 
+    * core-send parcel queue.
     */
    private class InputProcessor extends Thread {
-      boolean operating, terminated;
+	  ErrorObject error;
+      boolean terminated, errorCondition;
+      boolean terminateImmediate;
       
       InputProcessor () {
          super("Input Processor ".concat(String.valueOf(getLocalAddress())));
@@ -890,60 +1105,177 @@ class ConnectionImpl implements Connection {
       
       @Override
       public void run() {
-         operating = true;
          setPriority(parameters.getBaseThreadPriority());
          
-         while (operating) {
-            try {
-            	// check operative status
-            	operating = !terminated || !inputQueue.isEmpty();
-            	if (!operating) continue;
+         while (!terminateImmediate) {
+        	// check operative status
+        	boolean operating = !terminated || (!inputQueue.isEmpty() && !errorCondition);
+        	if (!operating) {
+       	 		if (debug) {
+       	 			prot("-- (InputProcessor) FINISH OPERATING");
+       	 		}
+   	 			push_closing_parcel();
+        		break;
+        	}
             	
-               // get the next input object (blocking)
-               UserObject object = inputQueue.take();
-               long objectNr = object.objectID; 
-               SendPriority priority = object.priority;
+            try {
+           	 	// enter waiting state if SENDING OFF
+       		 	// we send only SIGNAL parcels in sending-off state
+           	 	if (sendingOff) {
+           	 		if (debug) {
+           	 			prot("-- INPUT-PROC: sending is OFF");
+           	 		}
+           	 		// checking and performing send-locked state
+                    checkAndPerformSendWait();
+           	 	}
+                sendingOff = getTransmissionSpeed() == 0;
+                
+//               // get the next input object (blocking)
+//               UserObject object = inputQueue.take();
+//               long objectNr = object.objectID; 
+//               SendPriority priority = object.priority;
                
-               // serialise the input object
-               byte[] serObj;
-               try {
-            	   serObj = getSendSerialization().serialiseObject(object.getObject());
-               } catch (Exception e) {
-            	   throw new IllegalStateException("send serialisation error (" +
-            			   getLocalAddress() + ") object-id " + objectNr, e);
-               }
-            		   
-               if (serObj.length > parameters.getMaxSerialisationSize()) {
-            	   throw new IllegalStateException("send serialisation size overflow for object " + 
-            			   objectNr + ", size " + serObj.length);
-               }
-               
-               // split serialisation into send parcels
-               TransmissionParcel[] parcelBundle = 
-                  TransmissionParcel.createParcelArray(
-                        TransmissionChannel.OBJECT, serObj, objectNr, priority,
-                        parameters.getTransmissionParcelSize());
+//               // serialise the input object --> create a serial data object
+//               byte[] serObj;
+//               try {
+//            	   serObj = getSendSerialization().serialiseObject(object.getObject());
+//               } catch (Exception e) {
+//            	   throw new IllegalStateException("send serialisation error (" +
+//            			   getLocalAddress() + ") object-id " + objectNr, e);
+//               }
+//               
+//               // guard against serialisation size overflow (parameter setting)
+//               if (serObj.length > parameters.getMaxSerialisationSize()) {
+//            	   throw new IllegalStateException("send serialisation size overflow for object " + 
+//            			   objectNr + ", size " + serObj.length);
+//               }
+//               
+//               // split object serialisation into send parcels
+//               TransmissionParcel[] parcelBundle = 
+//                  TransmissionParcel.createParcelArray(
+//                		ConnectionImpl.this,
+//                        TransmissionChannel.OBJECT, serObj, objectNr, priority,
+//                        parameters.getTransmissionParcelSize());
 
-               // store parcels in send-queue
-               for (TransmissionParcel parcel : parcelBundle) {
-                  coreSend.put(parcel);
+               // get next send-object from input-queue and process for next parcel
+               // (this can block until a send-object is available)
+               // we choose this two-step access method to allow for resorting of objects
+               // during sending (in particular relevant for TEMPO delayed connections)
+               // (unfortunately Java queues won't allow for waiting peek operations)
+               ObjectSendSeparation separation = inputQueue.peek();
+               if (separation == null) {
+            	   separation = inputQueue.take();
+            	   inputQueue.put(separation);
                }
+               
+               // get next send-parcel from send-object and push into core-sending
+               // (this can block until send load has decreased under the connection's limit)
+               // remove the send-object if all parcels are transferred to core-send
+               TransmissionParcel parcel = separation.getNextParcel();
+               if (parcel == null) {
+            	   inputQueue.remove(separation);
+               } else {
+            	   queueParcelForSending(parcel);
+               }
+        	   
+               
             } catch (InterruptedException e) {
+            	interrupted();
+            	
             } catch (Throwable e) {
             	e.printStackTrace();
             	close(e, 2);
             }
          }
+         
+         inputQueue.clear();
       }
       
-      /** Terminates this thread. Thread may continue
-       * operations in termination state until its input queue is empty. 
+      /** Sets the cardinal send control (on/off state). If sending is off
+       * the send-parcel queue is not addressed for reduction.
+       *    
+       * @param send boolean true == send data, false == wait state
        */
-      public void terminate () {
+      public void setSending (boolean doSend) {
+    	  if (sendingOff != doSend) return;
+    	  if (debug) {
+    		  System.out.println("-- (InputProcessor) set SENDING to '" + doSend +"' : " 
+    				  + ConnectionImpl.this);
+    	  }
+    	  
+    	  sendingOff = !doSend;
+    	  if (doSend) {
+    		  notifySendLock();
+    	  } else {
+    		  interrupt();
+    	  }
+      }
+
+      /** Inject a close-command parcel into core-send processor.
+       * This closing-parcel will be executed only after all remaining
+       * data of previous objects has been sent over the socket.
+       * By executing the closing-parcel, closing of the remote station
+       * is requested via a signal. This signal always is in the trail
+       * of the last object data sent of this connection.
+	  */
+      private void push_closing_parcel () {
+          if (isConnected()) {
+    	      SchedulableTimerTask task = new RequestCloseByRemoteTask(error);
+    	      long objectID = getNextObjectNr();
+    	      TransmissionParcel closerParcel = new TransmissionParcel(
+    	    		  				ConnectionImpl.this, objectID, task);
+    	      coreSend.put(closerParcel);
+        	  if (debug) {
+        		  System.out.println("-- (InputProcessor) pushing a CLOSING-PARCEL for " 
+        				  + ConnectionImpl.this);
+
+        	  }
+          }
+      }
+      
+//      /** Waits until a send-signal appears in the send-queue or an interrupt
+//       * occurs. Granularity 1000 ms.
+//       * 
+//       * @throws InterruptedException
+//       */
+//      private void wait_for_send_signal() throws InterruptedException {
+//   	  do {
+//   		 TransmissionParcel p = peek();
+//   		 if (p != null && p.isSignal()) {
+//   			 if (debug) {
+//   				 prot("-- SIGNAL detected (on wait): " + p.getObjectID() 
+//   				 			+ " " + p.getParcelSequencelNr());
+//   			 }
+//   			 break;
+//   		 }
+//   		 Thread.sleep(1000);
+//   	  } while (true);
+//      }
+         
+      /** Terminates this thread by conserving existing outgoing data.
+       * Thread continues operations until its input queue is empty. 
+       */
+      public void terminate (ErrorObject error) {
+         if (debug) {
+        	 prot("-- (InputProcessor) terminating w/ " + error);
+         }
+    	 errorCondition = error != null && error.info != 0;
+    	 this.error = error;
          terminated = true;
+         if (sendingOff) {
+        	 inputQueue.clear();
+         }
          interrupt();
       }
 
+      /** Terminates operations of this thread unconditionally and 
+       * immediate. The input data queue is cleared. 
+       */
+      public void terminateImmediately () {
+    	  terminateImmediate = true;
+    	  interrupt();
+      }
+      
       /** Whether this thread has been terminated. Thread may continue
        * operations in termination state until its inpu queue is empty. 
        * 
@@ -958,25 +1290,31 @@ class ConnectionImpl implements Connection {
     * to the application.
     */
    private class OutputProcessor extends Thread {
-      boolean operating;
+      boolean terminated;
+      boolean terminateImmediate;
 
       public OutputProcessor () {
          super("Output Processor ".concat(String.valueOf(getLocalAddress())));
          setDaemon(true);
       }
       
-      @Override
+	@Override
       public synchronized void run() {
-         operating = true;
          setPriority(parameters.getBaseThreadPriority());
          
-         while (operating) {
-            UserObject object;
+         while (!terminateImmediate) {
+        	 // decide on whether to continue operations
+        	 boolean operating = !terminated || !objectReceiveQueue.isEmpty();
+        	 if (!operating) {
+        		 break;
+        	 }
+        	 
             try {
-
                // read from object-receive-queue and deliver to application
+               UserObject object;
                while ((object = objectReceiveQueue.take()) != null) {
-                  // dispatch event to connection listeners
+            	   
+                  // dispatch receive event to connection listeners
             	  if (object.getObject() instanceof PingEcho) {
                       firePingEchoEvent((PingEcho)object);
             	  } else {
@@ -985,17 +1323,31 @@ class ConnectionImpl implements Connection {
                }
                
             } catch (InterruptedException e) {
+            	interrupted();
             	
             } catch (Throwable e) {
-               System.out.println("********  UNCAUGHT APPLICATION EXCEPTION  ******** : \n" + e);
+               prot("********  UNCAUGHT APPLICATION EXCEPTION  ******** : \n" + e);
                e.printStackTrace();
             }
+         }
+         
+         objectReceiveQueue.clear();
+         
+         // close socket (event DISCONNECTED) if we ride on a remote request
+         // for closure
+         if (requestedCloseError != null) {
+        	 closeSocket(requestedCloseError);
          }
       }
       
       public void terminate() {
-         operating = false;
+         terminated = true;
          interrupt();
+      }
+
+      public void terminateImmediately() {
+    	  terminateImmediate = true;
+          interrupt();
       }
    }
    
@@ -1043,7 +1395,7 @@ class ConnectionImpl implements Connection {
       }
       
       private void init () throws FileNotFoundException {
-          if (coreSend == null | fileSenderMap == null) {
+          if (fileSenderMap == null) {
               throw new IllegalStateException("initialisation error");
           }
           if (fileSenderMap.size()+1 > getParameters().getObjectQueueCapacity()) {
@@ -1074,7 +1426,7 @@ class ConnectionImpl implements Connection {
          fileID = getNextObjectNr();
          ongoing = true;
          if (debug) {
-        	 System.out.println("--- created FileSendProcessor ID " + fileID + ", length " + fileLength 
+        	 prot("--- created FileSendProcessor ID " + fileID + ", length " + fileLength 
         			 + ", parcels " + nrOfParcels + ", remote [" + remotePath + "]");
          }
          
@@ -1101,11 +1453,12 @@ class ConnectionImpl implements Connection {
                
                // construct next parcel
                TransmissionParcel parcel = new TransmissionParcel(
+            		 ConnectionImpl.this,
                      fileID, parcelNr, buffer, 0, Math.max(readLen, 0));
                parcel.setChannel(TransmissionChannel.FILE);
                parcel.setPriority(priority);
                if (debug) {
-            	   System.out.println("--- created FILE PARCEL: file-ID " + fileID + ", ser " + parcelNr);
+            	   prot("--- created FILE PARCEL: file-ID " + fileID + ", ser " + parcelNr);
                }
                
                // construct an object header in parcel number 0
@@ -1119,12 +1472,12 @@ class ConnectionImpl implements Connection {
                // add a timer task for TRANSFER CONFIRM on last parcel
                if (parcelNr+1 == nrOfParcels) {
                   AbortFileTimeoutTask timeoutTask = new AbortFileTimeoutTask(
-                      ConnectionImpl.this, fileID, parameters.getConfirmTimeout());
+                      fileID, parameters.getConfirmTimeout());
                   parcel.setTimerTask(timeoutTask);
                }
 
                // queue file parcel for sending (blocking)
-               coreSend.put(parcel);
+               queueParcelForSending(parcel);
                transmittedLength += parcel.getLength();
                parcelNr++;
                
@@ -1141,7 +1494,7 @@ class ConnectionImpl implements Connection {
       private void parcelsSent () throws IOException {
          fileIn.close();
          if (debug) {
-        	 System.out.println("--- parcels queued for sending, source = " + file);
+        	 prot("--- parcels queued for sending, source = " + file);
          }
       }
       
@@ -1169,7 +1522,7 @@ class ConnectionImpl implements Connection {
       public void finishTransfer (boolean success) {
          cancelTransfer();
          if (debug) {
-        	 System.out.println("--- finishing SEND file transfer ID " + fileID  
+        	 prot("--- finishing SEND file transfer ID " + fileID  
         			 + ", success=" + success + ", target: " + remotePath
         			 + ", " + ConnectionImpl.this);
          }
@@ -1202,21 +1555,22 @@ class ConnectionImpl implements Connection {
          cancelTransfer();
 
          if (debug) { 
-       	     System.out.println("-- dropping outgoing file transfer ID " + fileID + ", con: " + ConnectionImpl.this);
-    	     System.out.println("   signal to remote: BREAK " + signalInfo);
-             System.out.println("   FILE_ABORTED event " + eventInfo);
+       	     prot("-- dropping outgoing file transfer ID " + fileID + ", con: " + ConnectionImpl.this);
+    	     prot("   signal to remote: BREAK " + signalInfo);
+             prot("   FILE_ABORTED event " + eventInfo);
           }
 
          // send a TRANSFER BREAK signal to remote
          if (signalInfo != 0) {
             String text = e == null ? null : e.toString();
-            sendSignal(Signal.newBreakSignal(fileID, signalInfo, text));
+            sendSignal(Signal.newBreakSignal(ConnectionImpl.this, fileID, signalInfo, text));
          }
 
          // issue ABORTED event to user
          if (eventInfo != 0) {
             // inform the user (remote abortion event)
-            TransmissionEventImpl event = new TransmissionEventImpl(ConnectionImpl.this,
+            TransmissionEventImpl event = new TransmissionEventImpl(
+            	 ConnectionImpl.this,
                  TransmissionEventType.FILE_ABORTED,
                  fileID, eventInfo, e);
             event.setDuration(duration);
@@ -1243,11 +1597,12 @@ class ConnectionImpl implements Connection {
          cancelTransfer();
 
          // signal FAILURE to remote
-         sendSignal(Signal.newFailSignal(fileID, 2, "timeout = " + sec + " sec"));
+         sendSignal(Signal.newFailSignal(
+        		 ConnectionImpl.this, fileID, 2, "timeout = " + sec + " sec"));
 
          // EVENT dispatch: inform user (timeout abortion event)
-         TransmissionEventImpl event = new TransmissionEventImpl(ConnectionImpl.this,
-              TransmissionEventType.FILE_FAILED, fileID, 103);
+         TransmissionEventImpl event = new TransmissionEventImpl(
+        		 ConnectionImpl.this, TransmissionEventType.FILE_FAILED, fileID, 103);
          event.setDuration(duration);
          event.setPath(remotePath);
          event.setFile(file);
@@ -1282,73 +1637,61 @@ class ConnectionImpl implements Connection {
    }
    
    
-   /** This is a BlockingQueue for TransmissionParcel whose digesting end
-    * is automatically sending parcels over the net socket. It owns a 
-    * daemon thread which takes and sends the parcels. The thread runs
-    * as long as parcels are available in the queue OR it has not been
-    * terminated.
+   /** CoreSend is a global queue for send-parcels for all connections with an
+    * adjunct processing thread. The type is <code>PriorityBlockingQueue</code>
+    * of <code>TransmissionParcel</code>. The digesting end automatically sends 
+    * parcels over the net sockets which belong to the issuing connections
+    * and are available as data element in the parcels. The processing occurs 
+    * as a daemon thread which runs until CoreSend is terminated. Currently 
+    * termination does not take place.
+    * <p>If sending of a parcel causes an error, the associated <code>Connection
+    * </code> is closed by the processor stating the error. 
     *
     * Currently this terminates if an IO error occurs on the socket.
     */
-   private class CoreSend extends PriorityBlockingQueue<TransmissionParcel> 
+   private static final class CoreSend extends PriorityBlockingQueue<TransmissionParcel> 
    {
-      boolean terminate, working;
-      long lastTransmitTime;
-      long currentLoad;
-      long loadLimit;
-      boolean sendingOff;
-      ErrorObject error;
+      boolean terminate;
+//      long currentSendLoad;
       Thread send;
       
       public CoreSend () {
-         super(64);
-         loadLimit = Math.max(parameters.getParcelQueueCapacity() *
-        		 	parameters.getTransmissionParcelSize(), 16*1024);
-         sendingOff = getTransmissionSpeed() == 0;
+         super(32);
+         System.out.println("-- CORESEND STATIC INIT, priority = " + JennyNet.getTransmitThreadPriority());
          
-         send = new Thread("CoreSend ".concat(String.valueOf(getLocalAddress())))
-         {
+         send = new Thread("JennyNet Static CoreSend") {
+        	 
             @Override
             public synchronized void run() {
-               setPriority(Thread.MAX_PRIORITY);
+               ConnectionImpl con = null;
                
-               while (working) {
+               while (true) {
+            	  // determine whether thread has to stop 
+            	  boolean working = !terminate || !isEmpty();
+            	  if (!working) break;
+                	  
                   try {
-                	 // determine whether thread has to stop 
-                	 working = !terminate || (!isEmpty() & !sendingOff);
-                	 if (!working) continue;
-            		 interrupted();
-                	  
-                	 // enter waiting if sending switched off
-            		 // we send only SIGNAL parcels in sending-off state
-                	 if (sendingOff) {
-                		 if (debug) {
-                			 System.out.println("-- CORE-SEND: sending is OFF");
-                		 }
-                		 wait_for_send_signal();
-                	 }
-                	  
                      // take next parcel from send-queue
                      TransmissionParcel parcel = take();
+                     con = parcel.getConnection();
+                     TransmissionChannel channel = parcel.getChannel();
                      
-                     // avoid sending invalid parcels of cancelled file transfers
-                     if (parcel.getChannel() == TransmissionChannel.FILE &&
-                    	 fileSenderMap.get(parcel.getObjectID()) == null) {
+                     // ignore parcels of inactive connections
+                     // or cancelled file transfers
+                     if (!con.isConnected() || con.outgoingClosed ||
+                    	 (channel == TransmissionChannel.FILE &&
+                    	 con.fileSenderMap.get(parcel.getObjectID()) == null)) {
                     	 if (debug) {
                     		 System.out.println("-- dropped a FILE SENDER parcel, id " 
                     				 + parcel.getObjectID() + ", nr " + parcel.getParcelSequencelNr());
                     	 }
                     	 continue;
                      }
-                     
-                     // send parcel over network socket
-                     currentLoad -= parcel.getSerialisedLength();
-                     writeToSocket(parcel);
-                     lastTransmitTime = System.currentTimeMillis();
-                     
-                     // sum up exchanged data (e.g. for IDLE state control)
-                     if (!parcel.isSignal()) {
-                        exchangedDataVolume += parcel.getSerialisedLength();
+
+                     // send data type parcels over the net
+                     if (channel != TransmissionChannel.BLIND) {
+                    	 // send parcel over network socket
+                    	 writeToSocket(parcel);
                      }
                      
                      // schedule a timer-task that may be defined on the parcel
@@ -1358,117 +1701,128 @@ class ConnectionImpl implements Connection {
                      }
                      
                   } catch (InterruptedException e) {
+             		 interrupted();
 
                   } catch (Throwable e) {
-                     e.printStackTrace();
-                     working = false;
-                     close(e, 1);
+                	  if (debug) {
+                		  e.printStackTrace();
+                	  }
+                      working = false;
+                      if (con != null) {
+                    	  ErrorObject error = new ErrorObject(1, e.toString());
+                    	  con.closeSocket(error);
+                    	  con.close(error);
+                      }
                   } 
                }  // while loop
 
-               // close the network socket when core-send terminates
-               closeSocket(error);
+               // clear input queue when terminating
                clear();
             }
          };
-         working = true;
+         
+         // classify and start the thread
+         send.setPriority(JennyNet.getTransmitThreadPriority());
          send.setDaemon(true);
          send.start();
       }
       
-   /** Waits until a send-signal appears in the send-queue or an interrupt
-    * occurs. Granularity 1000 ms.
-    * 
-    * @throws InterruptedException
-    */
-   private void wait_for_send_signal() throws InterruptedException {
-	  do {
-		 TransmissionParcel p = peek();
-		 if (p != null && p.isSignal()) {
-			 if (debug) {
-				 System.out.println("-- SIGNAL detected (on wait): " + p.getObjectID() 
-				 			+ " " + p.getParcelSequencelNr());
-			 }
-			 break;
-		 }
-		 Thread.sleep(1000);
-	  } while (true);
-   }
-      
     /** Inserts the specified data parcel into this priority queue. 
-    * This method may block until space is made available in the queue.
+    * This method will not block.
     * 
     * @param parcel <code>TransmissionParcel</code>
     */
     @Override
 	public void put (TransmissionParcel parcel) {
-		// naive blocking behaviour depending on data load
-		do {
-			if (currentLoad < loadLimit) {
-				break;
-			}
-			Util.sleep(25);
-		} while (true);
-
+    	if (terminate) 
+    		throw new IllegalStateException("send-thread is terminated");
+    	
+    	// verify parcel associated connection
+    	ConnectionImpl con = parcel.getConnection();
+    	if (!con.isConnected()) 
+    		throw new IllegalStateException("cannot send in disconnected state");
+    	
 		// put parcel into sorting queue
 		super.put(parcel);
-		currentLoad += parcel.getSerialisedLength();
+		
+		// increase the data load counters
+//        if (!parcel.isSignal()) {
+//        currentSendLoad += parcel.getSerialisedLength();
+//        }
+        
 		if (debug) {
 			System.out.println("-- (coreSend) putting PARCEL w/ priority " + parcel.getPriority().ordinal() 
 					+ ", " + parcel.getPriority());
 		}
 	}
 
-    @Override
-	public boolean add (TransmissionParcel parcel) {
-		// unconditional parcel add
-		boolean b = super.add(parcel);
-		currentLoad += parcel.getSerialisedLength();
-		return b;
-	}
-
-      /** Sets the cardinal send control (on/off state). If sending is off
-       * the send-parcel queue is not addressed for reduction.
-       *    
-       * @param send boolean true == send data, false == wait state
-       */
-      public void setSending (boolean doSend) {
-    	  if (debug & sendingOff == doSend) {
-    		  System.out.println("-- set SENDING to '" + doSend +"' : " + ConnectionImpl.this.toString());
-    	  }
-    	  sendingOff = !doSend;
-    	  if (doSend) {
-    		  send.interrupt();
-    	  }
-      }
+    /** Writes a transmission parcel to its associated network socket.
+     * This method blocks until all data of the argument has been written
+     * to the output stream.
+     * 
+     * @param parcel {@code TransmissionParcel}
+     * @throws IOException
+     */
+    protected void writeToSocket (TransmissionParcel parcel) throws IOException {
+        ConnectionImpl con = parcel.getConnection();
+        if (debug) {
+           System.out.println("--- CORE-SEND: writing parcel to socket: " + con.getLocalAddress().getPort());
+           parcel.report(1, System.out);
+        }
+        
+        // write to TCP socket
+        parcel.writeObject(con.socketOutput);
+        con.socketOutput.flush();
+        
+        // update connection's exchanged volume counter 
+        if (!parcel.isSignal()) {
+    		int volume = parcel.getSerialisedLength();
+            con.exchangedDataVolume += volume;
+            con.decrementSendLoad(volume);
+//          currentSendLoad -= volume;
+        }
+     }
     
-      public long getLlastTransmitTime () {
-          return lastTransmitTime;
-       }
-       
-      public void terminate (ErrorObject error) {
-    	 this.error = error;
+//      /** Returns the current amount of unsent scheduled send data.
+//       * 
+//       * @return long unsent data volume
+//       */
+// 	  public long getCurrentLoad () {
+// 		  return currentSendLoad;
+// 	  }
+    
+      /** Triggers termination of the sending thread. The internal thread
+       * stays alive until all queued parcels underwent a send attempt,
+       * i.e. the queue becomes empty.
+       * 
+       */
+      public void terminate () {
          terminate = true;
-         if (sendingOff) {
-        	 clear();
-         }
          send.interrupt();
       }
 
       @Override
       protected void finalize() throws Throwable {
-         terminate(new ErrorObject(99, "instance finalized"));
+         terminate();
          super.finalize();
       }
 
-      public void setThreadPriority(int p) {
-         send.setPriority(p);
+//      /** Sets the priority of the internal sending thread.
+//       * 
+//       * @param p int thread priority
+//       */
+//      public void setThreadPriority (int p) {
+//         send.setPriority(p);
+//      }
+      
+      /** Whether this sending instance is capable of sending parcels,
+       * i.e. the internal thread is alive.
+       * 
+       * @return boolean true == sending is alive
+       */
+      public boolean isAlive () {
+    	  return send.isAlive();
       }
-
-//    public long getCurrentLoad () {
-//  	return currentLoad;
-//  }
-//    
    }
    
    /** A BlockingQueue that contains transmission parcels received from
@@ -1478,12 +1832,11 @@ class ConnectionImpl implements Connection {
     * agglomeration objects, which are processors themselves.
     */
    private class CoreReceive extends LinkedBlockingQueue<TransmissionParcel> {
-      boolean operating;
+      boolean terminated;
       long lastTransmitTime;
       
       public CoreReceive () {
     	  super(getParameters().getParcelQueueCapacity());
-    	  operating = true;
     	  receive.setDaemon(true);
     	  receive.start();
       }
@@ -1492,14 +1845,14 @@ class ConnectionImpl implements Connection {
       {
 	      @Override
 	      public void run() {
-	         operating = true;
 	         setPriority(parameters.getTransmitThreadPriority());
 	         
-	         while (operating) {
+	         while (!terminated) {
 	            try {
 	               // read next incoming parcel from remote (blocking)
 	               TransmissionParcel parcel = readParcelFromSocket();
-	               lastTransmitTime = System.currentTimeMillis();
+	               if (terminated) break;
+            	   lastTransmitTime = System.currentTimeMillis();
 	
 	               // branch parcel path into SIGNAL, FILE and OBJECT digestion
 	               switch (parcel.getChannel()) {
@@ -1520,22 +1873,36 @@ class ConnectionImpl implements Connection {
 	               }
 	            
 	            } catch (SocketException e) {
+	               if (debug) {
+	            	   System.out.println("-- (CoreReceive) SocketException: " + e + ConnectionImpl.this);
+	               }
 	               if (!closed) {
 	                  e.printStackTrace();
 	                  close(e, 3);
+	                  continue;
+	               }
+	               if (connected) {
+	            	   closeSocket(localCloseError);
 	               }
 	               
 	            } catch (Throwable e) {
+	               if (debug) {
+	            	   System.out.println("-- (CoreReceive) Throwable: " + e + ConnectionImpl.this);
+	               }
 	               if (!(e instanceof EOFException)) {
 	                  e.printStackTrace();
 	               }
-	               close(e, 3);
+	               if (!closed) {
+	                  e.printStackTrace();
+	                  close(e, 3);
+	                  continue;
+	               }
+	               if (connected) {
+	            	   closeSocket(localCloseError);
+	               }
 	            }
-	         }
-	         
-	         // empty queue when finished operations
-	         clear();
-	      }
+	         } // while
+	      } // run
       };
       
       private void fileReceiveDigestion(TransmissionParcel parcel) 
@@ -1552,7 +1919,7 @@ class ConnectionImpl implements Connection {
         	// we expect serial 0 for initial parcel
             if (parcel.getParcelSequencelNr() > 0) {
             	if (debug) {
-            		System.out.println("-- FILE RECEIVE dropping out-of-sync parcel (ID=" + 
+            		prot("-- FILE RECEIVE dropping out-of-sync parcel (ID=" + 
             				parcel.getObjectID() + ", serial=" + 
             				parcel.getParcelSequencelNr() + ")");
             	}
@@ -1566,7 +1933,7 @@ class ConnectionImpl implements Connection {
                fileReceptorMap.put(fileID, fileQueue);
             } catch (Exception e) {
                // RETURN SIGNAL: incoming file can not be received (some error)!
-               sendSignal(Signal.newBreakSignal(fileID, 1, e.toString()));
+               sendSignal(Signal.newBreakSignal(ConnectionImpl.this, fileID, 1, e.toString()));
             }
          }
          
@@ -1582,13 +1949,13 @@ class ConnectionImpl implements Connection {
          int info = signal.getInfo();
          long objectID = parcel.getObjectID();
      	 if (debug) {
-     		 System.out.println("-- SIGNAL REC (ob " + objectID + "): " + type +
+     		 prot("-- SIGNAL REC (ob " + objectID + "): " + type +
      				 " (i " + signal.getInfo() + ") from " + getRemoteAddress() + ", [" + getLocalAddress() + "]");
      	 }
          
          switch (type) {
          case ALIVE:
-            sendSignal(Signal.newAliveEchoSignal());
+            sendSignal(Signal.newAliveEchoSignal(ConnectionImpl.this));
          break;
          case ALIVE_ECHO:
         	 if (aliveTimeoutTask != null) {
@@ -1596,7 +1963,7 @@ class ConnectionImpl implements Connection {
         	 }
           break;
          case PING:
-            sendSignal(Signal.newEchoSignal(objectID));
+            sendSignal(Signal.newEchoSignal(ConnectionImpl.this, objectID));
          break;
          case ECHO:
             try {
@@ -1619,7 +1986,7 @@ class ConnectionImpl implements Connection {
         	if (isIncomingFile) {
         		// drop transfer on the file-agglomeration
                 if (debug) {
-             	   System.out.println("-- (signal digestion) dropping INCOMING FILE TRANSFER (BREAK) " + objectID);
+             	   prot("-- (signal digestion) dropping INCOMING FILE TRANSFER (BREAK) " + objectID);
                 }
 	            FileAgglomeration fileQueue = fileReceptorMap.get(objectID);
 	            if (fileQueue != null) {
@@ -1633,7 +2000,7 @@ class ConnectionImpl implements Connection {
             else {
         	   // drop transfer on the send-file-processor
                if (debug) {
-            	   System.out.println("-- (signal digestion) dropping OUTGOING FILE TRANSFER (BREAK) " + objectID);
+            	   prot("-- (signal digestion) dropping OUTGOING FILE TRANSFER (BREAK) " + objectID);
                }
                SendFileProcessor fileSender = fileSenderMap.get(objectID);
                if (fileSender != null) {
@@ -1641,7 +2008,7 @@ class ConnectionImpl implements Connection {
                   fileSender.breakTransfer(eventInfo, 0, 
                       new RemoteTransferBreakException(signal.getText()));
                } else {
-            	   System.out.println("   ERROR: send-file-processor not found!");
+            	   prot("   ERROR: send-file-processor not found!");
                }
             }
          break;
@@ -1668,22 +2035,32 @@ class ConnectionImpl implements Connection {
                }
             }
          break;
+         case CLOSE:
+        	 // we close down the socket w/ error 6 + msg from remote
+        	 ErrorObject error = new ErrorObject(6, signal.getText());
+        	 requestedCloseError = error;
+        	 closeOutgoingChain(error);
+
+        	 // trigger receiving chain termination propagation 
+        	 receiveProcessor.terminate();
+        	 terminate();
+       	 break;
          case TEMPO:
         	if (getTransmissionSpeed() != info) {
 	        	if (!fixedTransmissionSpeed) {
 	        		// set the new local transmission speed after remote
 	        		transmitSpeed = info;
-	        		if (coreSend != null) {
-	      	  			coreSend.setSending(info != 0);
+	        		if (inputProcessor != null) {
+	      	  			inputProcessor.setSending(info != 0);
 	        		}
 	            	if (debug) {
-	      	  			System.out.println("-- TEMPO SIGNAL received, new TRANSMIT BAUD is " + info);
+	      	  			prot("-- TEMPO SIGNAL received, new TRANSMIT BAUD is " + info);
 	            	}
 	        	} else {
 	        		// ignore remote TEMPO setting due to local priority setting
 	        		// reset remote speed
 	            	if (debug) {
-	      	  			System.out.println("-- TEMPO SIGNAL received with Baud " + info + " --> ignored!");
+	      	  			prot("-- TEMPO SIGNAL received with Baud " + info + " --> ignored!");
 	            	}
 	      	  		setTempo(getTransmissionSpeed());
 	        	}
@@ -1701,14 +2078,15 @@ class ConnectionImpl implements Connection {
       }
       
       public void terminate () {
-//         System.out.println("~~~ CoreRecevie Terminate! ~~~");
-         operating = false;
-         receive.interrupt();
+         if (debug) {
+        	 prot("~~~ CoreRecevie Terminate! ~~~");
+         }
+         terminated = true;
+//         receive.interrupt();
       }
    }
 
-   private static class AbortFileTimeoutTask extends SchedulableTimerTask {
-      private ConnectionImpl connection;
+   private class AbortFileTimeoutTask extends SchedulableTimerTask {
       private long fileId;
       private int out_time;
       
@@ -1718,26 +2096,97 @@ class ConnectionImpl implements Connection {
        * @param fileId long file transfer
        * @param time int delay in milliseconds
        */
-      public AbortFileTimeoutTask (ConnectionImpl c, long fileId, int time) {
+      public AbortFileTimeoutTask (long fileId, int time) {
          super(time, "AbortFileTimeoutTask, file=" + fileId);
-         connection = c;
          this.fileId = fileId;
-//         timer.schedule(this, time);
       }
       
       @Override
       public void run() {
+     	 // terminate if socket is closed
+     	 if (!connected) return;
+     	  
          // find outgoing file transmission and timeout
-         SendFileProcessor fileSender = connection.fileSenderMap.get(fileId);
+         SendFileProcessor fileSender = fileSenderMap.get(fileId);
          if (fileSender != null) {
          	if (debug) {
-               System.out.println("CON-TIMER: Cancelling file transfer on missing CONFIRM: " 
-                       + connection.getRemoteAddress() + " FILE = " + fileId);
+               prot("CON-TIMER: Cancelling file transfer on missing CONFIRM: " 
+                       + getRemoteAddress() + " FILE = " + fileId);
          	}
 
             fileSender.timeoutTransfer(out_time);
          }
       }
+   }
+   
+   private class CloseSocketTimeoutTask extends SchedulableTimerTask {
+      private ErrorObject error;
+      
+      /** A new file transfer cancel task.
+       * 
+       * @param c IConnection
+       * @param fileId long file transfer
+       * @param time int delay in milliseconds
+       */
+      public CloseSocketTimeoutTask (ErrorObject error, int time) {
+         super(time, "CloseSocketTimeoutTask, " + error + ", " + ConnectionImpl.this);
+         this.error = error;
+      }
+      
+      @Override
+      public void run() {
+     	 // terminate if socket is closed
+     	 if (!connected) return;
+     	  
+         // shutting down socket on timeout
+     	 if (debug) {
+            prot("CON-TIMER: Shutting down socket on timeout of response from " 
+                   + getRemoteAddress());
+     	 }
+     	 closeSocket(error);
+      }
+   }
+	   
+   /** Parcel-bound task to request connection closure being performed by
+    * the remote station. This action occurs during
+    *
+    * <p>An ErrorObject is optionally made available to the task whose data
+    *  will be sent to remote for information purposes concerning the cause
+    *  of the closure..  
+    */
+   private class RequestCloseByRemoteTask extends SchedulableTimerTask {
+	   private ErrorObject error;
+	   
+	   /** Creates a new task with the given error data being sent 
+	    * to remote for information about the cause of the closure.
+	    * 
+	    * @param error {@code ErrorObject} may be null
+	    */
+	   public RequestCloseByRemoteTask (ErrorObject error) {
+		   super(0, "Close-Connection-Task");
+		   this.error = error;
+	   }
+
+	   @Override
+	   public void run() {
+		   if (debug) {
+		      System.out.println("-- running RequestCloseByRemoteTask for Connection " + 
+				   ConnectionImpl.this);
+		   }
+	
+		   // we send a CLOSE-REQUEST signal to remote
+		   int info = error == null ? 0 : error.info;
+		   String msg = error == null ? null : error.message;
+		   Signal closeRequest = Signal.newCloseRequestSignal(ConnectionImpl.this, 
+				   info, msg);
+		   sendSignal(closeRequest);
+		   
+		   // set up a timer task for socket closure
+		   ErrorObject timeoutError = new ErrorObject(7, "timeout on close request");
+		   SchedulableTimerTask task = new CloseSocketTimeoutTask(
+				   timeoutError, parameters.getConfirmTimeout()*2);
+		   task.schedule(timer);
+	   }
    }
    
    private class CheckIdleTimerTask extends TimerTask {
@@ -1841,8 +2290,8 @@ class ConnectionImpl implements Connection {
 
          // log output
      	 if (debug) {
-     		 System.out.println("CREATE ALIVE-TIMER on : " + c + ", period=" + period);
-     		 System.out.println("             time marker = " + System.currentTimeMillis());
+     		connection.prot("CREATE ALIVE-TIMER on : " + c + ", period=" + period);
+     		connection.prot("             time marker = " + System.currentTimeMillis());
      	 }
 
          // schedule this task
@@ -1855,19 +2304,23 @@ class ConnectionImpl implements Connection {
       
       @Override
       public void run() {
-    	 // cancel task if connection stopped
-         if (!connection.isConnected()) {
-        	cancel();
-            return;
-         }
-         
-    	 connection.sendSignal(Signal.newAliveSignal());
-    	 int delta = sendTime == 0 ? 0 : (int)(System.currentTimeMillis() - sendTime)/1000;
-    	 sendTime = System.currentTimeMillis();
-     	 if (debug) {
-     		 System.out.println("-- ALIVE sent to : " + connection.getRemoteAddress() + 
-     				 ", delta=" + delta + " sec");
-     	 }
+    	 try {
+	    	 // cancel task if connection stopped
+	         if (!connection.isConnected()) {
+	        	cancel();
+	            return;
+	         }
+	         
+	    	 connection.sendSignal(Signal.newAliveSignal(connection));
+	    	 int delta = sendTime == 0 ? 0 : (int)(System.currentTimeMillis() - sendTime)/1000;
+	    	 sendTime = System.currentTimeMillis();
+	     	 if (debug) {
+	     		connection.prot("-- ALIVE sent to : " + connection.getRemoteAddress() + 
+	     				 ", delta=" + delta + " sec");
+	     	 }
+    	 } catch (Throwable e) {
+    		 e.printStackTrace();
+    	 }
       }
    }
 
@@ -1932,8 +2385,6 @@ class ConnectionImpl implements Connection {
       @Override
       public void setTransmitThreadPriority(int p) {
          super.setTransmitThreadPriority(p);
-         if (coreSend != null)  
-            coreSend.setThreadPriority(p);
          if (coreReceive != null)  
             coreReceive.setThreadPriority(p);
       }
@@ -1953,7 +2404,7 @@ class ConnectionImpl implements Connection {
 
          // create new ALIVE timeout controlling if defined
          if (getAlivePeriod() > 0 && isConnected()) {
-            int period = getAlivePeriod() + getConfirmTimeout()/2;
+            int period = getAlivePeriod() + getConfirmTimeout();
             AliveEchoControlTask.createNew(ConnectionImpl.this, period);
          }
       }
@@ -2006,12 +2457,13 @@ class ConnectionImpl implements Connection {
    
    // --------------- inner classes ----------------   
       
-      /** This thread performs de-serialisation of objects received from remote
+   /** This thread performs de-serialisation of objects received from remote
        * and puts the resulting objects into the objectReceiveQueue. 
        * It services solely the OBJECT channel.
        */
       private class ReceiveProcessor extends Thread {
-         boolean operating;
+         boolean terminated;
+         boolean terminateImmediately;
          
          ReceiveProcessor () {
             super("Receive Processor ".concat(String.valueOf(getLocalAddress())));
@@ -2020,11 +2472,16 @@ class ConnectionImpl implements Connection {
          
          @Override
          public void run() {
-            operating = true;
             setPriority(parameters.getBaseThreadPriority());
             
-            while (operating) {
+            while (!terminateImmediately) {
                try {
+            	  // decide on whether to continue operations
+            	  boolean operating = !terminated || !coreReceive.isEmpty();
+            	  if (!operating) {
+            		  break;
+            	  }
+            	   
                   // get next received parcel (blocking)
                   TransmissionParcel parcel = coreReceive.take();
                   long objectNr = parcel.getObjectID();
@@ -2046,14 +2503,14 @@ class ConnectionImpl implements Connection {
                      // put result it into output queue 
                      putObjectToReceiveQueue(new UserObject(agglom.getObject(), objectNr, agglom.getPriority()));
                      if (debug) {
-                    	 System.out.println("--- OBJECT received (deserialised) to Queue: " + objectNr);
+                    	 prot("--- OBJECT received (deserialised) to Queue: " + objectNr);
                      }
 
                      // remove done multi-part agglomeration from registry
                      if (!isNewObject) {
                         objectReceptorMap.remove(objectNr);
                         if (debug) {
-                        	System.out.println("--- OBJECT agglomeration de-registered: " + objectNr);
+                        	prot("--- OBJECT agglomeration de-registered: " + objectNr);
                         }
                      }
                   }
@@ -2062,26 +2519,33 @@ class ConnectionImpl implements Connection {
                   else if (isNewObject) {
                      objectReceptorMap.put(objectNr, agglom);
                      if (debug) {
-                    	 System.out.println("--- NEW OBJECT agglomeration registered: " + objectNr);
+                    	 prot("--- NEW OBJECT agglomeration registered: " + objectNr);
                      }
                   }
                      
-                  
                } catch (InterruptedException e) {
+            	   interrupted();
+            	   
                } catch (Throwable e) {
                   e.printStackTrace();
                   close(e, 4);
                }
             }
+            
+            // clear any residuents in object reception-map
+            objectReceptorMap.clear();
+            
+            // trigger termination of output-processor (terminate propagation)
+            outputProcessor.terminate();
          }
          
          public void terminate () {
-            operating = false;
+            terminated = true;
             interrupt();
          }
       }
 
-      private static class ErrorObject {
+      protected static class ErrorObject {
     	  String message;
     	  int info;
     	  
@@ -2089,32 +2553,107 @@ class ConnectionImpl implements Connection {
     		  this.info = info;
     		  this.message = message;
     	  }
+
+		@SuppressWarnings("unused")
+		public ErrorObject (int info, Throwable ex) {
+			this.info = info;
+			if (ex != null) {
+				message = ex.toString();
+			}
+		}
+
+		@Override
+		public String toString() {
+			return "Error (" + info + ", msg=" + message + ")";
+		}
       }
       
-      private static class UserObject implements Comparable<UserObject> {
-    	  long objectID;
-    	  Object object;
-    	  SendPriority priority;
+      /** A class extending UserObject which performs object
+       * serialisation and prepares Transmission parcels. The parcels
+       * are returned via a get-next mechanism.
+       */
+      private class ObjectSendSeparation  extends UserObject  {
+    	  TransmissionParcel[] parcelBundle;
+    	  int nextParcel;
+   	   
+	  	  public ObjectSendSeparation (Object userObject, long id, SendPriority priority) {
+	   		  super(userObject, id, priority);
+	   	  }
+	
+	   	  /** Returns the TransmissonParcel which is next to be sent from
+	   	   * this object separation or null if no more parcels are available.
+	   	   *  
+	   	   * @return {@code TransmissionParcel}
+	   	   */
+	   	  public TransmissionParcel getNextParcel () {
+	   		  if (parcelBundle == null) {
+	   			  separateParcels();
+	   		  }
+	   		  return nextParcel == parcelBundle.length ? null : parcelBundle[nextParcel++];
+	   	   }
+	   	   
+	   	  /** Divides the incorporated user object into sendable
+	   	   *  transmission parcels.
+	   	   */
+	   	  private void separateParcels () {
+	          // serialise the input object --> create a serial data object
+	          byte[] serObj;
+	          long objectNr = getObjectNr();
+	          try {
+	       	   	serObj = getSendSerialization().serialiseObject(getObject());
+	          } catch (Exception e) {
+	        	  throw new IllegalStateException("send serialisation error (" +
+	        		   getLocalAddress() + ") object-id " + objectNr, e);
+	          }
+	           
+	          // guard against serialisation size overflow (parameter setting)
+	          if (serObj.length > parameters.getMaxSerialisationSize()) {
+	        	  throw new IllegalStateException("send serialisation size overflow for object " + 
+	        		   objectNr + ", size " + serObj.length);
+	          }
+	           
+	          // split object serialisation into send parcels
+	          parcelBundle = TransmissionParcel.createParcelArray(
+	           		   ConnectionImpl.this,
+	                   TransmissionChannel.OBJECT, serObj, objectNr, priority,
+	                   parameters.getTransmissionParcelSize());
+	   		   
+	   	  }
+      }
+      
+    /** A class representing a user-object which is made sortable according
+      * to our send priority queue requirements. The object is assigned a
+      * serial object number.
+      */
+    private static class UserObject implements Comparable<UserObject> {
+    	long objectID;
+    	Object object;
+    	SendPriority priority;
     	  
-    	  public UserObject (Object object, long id, SendPriority priority) {
-    		  objectID = id;
-    		  this.object = object;
-    		  this.priority = priority;
-    	  }
+    	public UserObject (Object object, long id, SendPriority priority) {
+    		if (object == null)
+    			throw new NullPointerException("object is null");
+       	  	if (id <= 0) 
+       	  		throw new IllegalArgumentException("illegal object number (may be overflow): " + id);
+        	  
+    		 objectID = id;
+    		 this.object = object;
+    		 this.priority = priority;
+    	}
 
-    	  public UserObject (PingEcho echo) {
-    		  objectID = echo.pingId();
-    		  this.object = echo;
-    		  this.priority = SendPriority.Normal;
-    	  }
+    	public UserObject (PingEcho echo) {
+    		objectID = echo.pingId();
+    		this.object = echo;
+    		this.priority = SendPriority.Normal;
+    	}
 
-  	   Object getObject () {
+  	    Object getObject () {
 		   return object;
-	   }
+	    }
 
-	   long getObjectNr () {
+	    long getObjectNr () {
 		   return objectID;
-	   }
+	    }
 
 		/** We compare natural for ordering a <code>PriorityQueue</code>,
 		 * i.e. the lower element is the priorised element. 
@@ -2136,12 +2675,12 @@ class ConnectionImpl implements Connection {
 			}
 
 			// compare priority class
-			if (priority.ordinal() < obj.priority.ordinal()) return -1;
-			if (priority.ordinal() > obj.priority.ordinal()) return +1;
+			if (priority.ordinal() < obj.priority.ordinal()) return  1;
+			if (priority.ordinal() > obj.priority.ordinal()) return -1;
 
 			// otherwise compare object numbers
 			return objectID < obj.objectID ? -1 : 
-				   objectID > obj.objectID ? +1 : 0;
+				   objectID > obj.objectID ?  1 : 0;
 		}
 
 		@Override
@@ -2157,7 +2696,7 @@ class ConnectionImpl implements Connection {
 			int code = (priority.hashCode() << 16) + (int)objectID;  
 			return code;
 		}
-      }
+    }
 
 	private static class AliveEchoControlTask extends TimerTask {
 	      private ConnectionImpl connection;
@@ -2205,8 +2744,8 @@ class ConnectionImpl implements Connection {
 	
 	         // log output
              if (debug) {
-            	 System.out.println("CREATE ALIVE-TIMEOUT TASK for : " + c + ", period=" + period);
-            	 System.out.println("             time marker = " + System.currentTimeMillis()/1000 + " sec");
+            	 connection.prot("CREATE ALIVE-TIMEOUT TASK for : " + c + ", period=" + period);
+            	 connection.prot("             time marker = " + System.currentTimeMillis()/1000 + " sec");
              }
              
 	         // schedule the new task
@@ -2226,25 +2765,28 @@ class ConnectionImpl implements Connection {
 	      
 	      @Override
 	      public void run() {
-	    	 // cancel task if connection stopped
-	         if (!connection.isConnected()) {
-	        	cancel();
-	            return;
-	         }
-
-	         // close connection if ALIVE-ECHO is missing over period time
-	         if (connection.aliveSignalTask != null) {
-                 if (debug) {
-                	 System.out.println("-- CHECKING ALIVE ECHO (control task)");
-                 }
-	        	 long sendTime = connection.aliveSignalTask.getSendTime();
-	        	 long delta = System.currentTimeMillis() - confirmedTime;
-	        	 if (sendTime > 0 && delta > period-200) {
-	        		 connection.close(new ConnectionTimeoutException("ALIVE signal timeout"), 5);
-	        	 }
-	         }
+	    	 try {
+		    	 // cancel task if connection stopped
+		         if (!connection.isConnected()) {
+		        	cancel();
+		            return;
+		         }
+	
+		         // close connection if ALIVE-ECHO is missing over period time
+		         if (connection.aliveSignalTask != null) {
+	                 if (debug) {
+	                	 connection.prot("-- CHECKING ALIVE ECHO (control task)");
+	                 }
+		        	 long sendTime = connection.aliveSignalTask.getSendTime();
+		        	 long delta = System.currentTimeMillis() - confirmedTime;
+		        	 if (sendTime > 0 && delta > period-200) {
+		        		 connection.close(new ConnectionTimeoutException("ALIVE signal timeout"), 5);
+		        	 }
+		         }
+	    	 } catch (Throwable e) {
+	    		 e.printStackTrace();
+	    	 }
 	      }
 	   }
 
-      
 }

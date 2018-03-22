@@ -11,6 +11,17 @@ Status: Alpha Results
 
 -----------------
 
+22.03.2018  working commit: 
+	- Introduced new protocol signal "close request" and added protocol to
+	ensure proper delivery of object data sent at the connection interface
+	even when connection is closed by the user immediately.
+	- introduced new event type in ConnectionListener: CONNECTION CLOSED.
+	CLOSED does not indicate socket inactivity any more but only interface
+	closure. DISCONNECTED indicates socket inactivity.
+	Both events are separate and CLOSED regularly occurs before DISCONNECT.
+	- Exported CoreSend data queue and socket-service thread to STATIC 
+	in order to reduce number of threads active per connection.
+
 21.03.2018  working commit: updated serialisation libraries to Kryo 4.0.1;  
             object instantiation supplemented for all classes which implement  
             the "Serializable" interface.

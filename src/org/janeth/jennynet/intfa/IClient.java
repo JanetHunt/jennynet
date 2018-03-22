@@ -5,7 +5,9 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
+import java.util.List;
 
+import org.janeth.jennynet.core.Client;
 import org.janeth.jennynet.exception.DoubleConnectionException;
 import org.janeth.jennynet.exception.JennyNetHandshakeException;
 
@@ -196,6 +198,5 @@ public interface IClient extends Connection {
          int connectionTime,
          int latency,
          int bandwidth);
-   
    
 }

@@ -167,6 +167,12 @@ public interface Connection {
     */
    public long getLastReceiveTime ();
    
+   /** Returns the current amount of unsent scheduled send data.
+    * 
+    * @return long unsent data volume
+    */
+   public long getCurrentSendLoad ();
+  
    /** Sends the given serialisable Object over the network in the normal
     * transmission priority class. 
     * <p><small>In order to be serialisable, the object's class has to be 

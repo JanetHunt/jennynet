@@ -107,8 +107,8 @@ class ConnectionParametersImpl implements Cloneable, ConnectionParameters {
    
    @Override
    public void setAlivePeriod (int period) {
-      if (period < 1000 & period != 0) { 
-         period = 1000;
+      if (period < 10000 & period != 0) { 
+         period = 10000;
       } else if (period > 300000) {
     	  period = 300000;
       }

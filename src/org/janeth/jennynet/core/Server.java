@@ -234,6 +234,9 @@ public class Server implements IServer {
 
    @Override
    public void closeAllConnections() {
+	  if (debug) {
+		  System.out.println("-- SV (" + getSocket().getLocalPort() + ") closing all connections");
+	  }
       for (Connection con : getConnections()) {
          try { 
             con.close(); 

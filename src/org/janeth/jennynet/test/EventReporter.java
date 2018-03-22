@@ -7,6 +7,7 @@ import org.janeth.jennynet.core.JennyNetByteBuffer;
 import org.janeth.jennynet.intfa.Connection;
 import org.janeth.jennynet.intfa.ConnectionListener;
 import org.janeth.jennynet.intfa.PingEcho;
+import org.janeth.jennynet.intfa.ServerConnection;
 import org.janeth.jennynet.intfa.TransmissionEvent;
 import org.janeth.jennynet.util.Util;
 
@@ -26,7 +27,8 @@ public class EventReporter implements ConnectionListener {
    
    private void thisStatement (Connection con) {
       String idstr = Util.bytesToHex(con.getShortId());
-      out.println("    THIS: " + idstr + ", NetAddr = " + con.getLocalAddress());
+      String contype = con instanceof ServerConnection ? "SV " : "CL ";
+      out.println("    THIS-" + contype + ": " + idstr + ", NetAddr = " + con.getLocalAddress());
    }
    
    @Override
@@ -46,9 +48,19 @@ public class EventReporter implements ConnectionListener {
       thisStatement(con);
    }
 
+	@Override
+	public void closed (Connection con, int cause, String message) {
+	    out.println("+++ Event: CONNECTION CLOSED, Info = " + cause);
+	      if (message != null) {
+	         out.println("    MSG: ".concat(message));
+	      }
+	      thisStatement(con);
+		
+	}
+	
    @Override
    public void idle (Connection con, boolean idle) {
-      out.println("+++ Event: CONNECTION IDLE STATUS (" + idle + "): " + con.getRemoteAddress() + 
+      out.println("+++ Event: CONNECTION NEW IDLE STATUS (" + idle + "): " + con.getRemoteAddress() + 
             "  ");
       thisStatement(con);
    }
@@ -137,6 +149,7 @@ public class EventReporter implements ConnectionListener {
       thisStatement(con);
       out.println("    ECHO: ".concat(pingEcho.toString()));
    }
+
 
    
 }

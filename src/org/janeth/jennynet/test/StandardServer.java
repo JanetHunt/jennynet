@@ -12,6 +12,14 @@ import org.janeth.jennynet.util.Util;
 
 class StandardServer extends Server {
 	
+	/** Creates a standard server of the given socket address. The given 
+	 * listener is added to each accepted connection. The server adds
+	 * a standard Reporter listener to each connection.
+	 * 
+	 * @param address SocketAddress
+	 * @param listener ConnectionListener
+	 * @throws IOException
+	 */
 	StandardServer (SocketAddress address, final ConnectionListener listener) 
 				throws IOException {
 		this(address, listener, null);
@@ -33,6 +41,7 @@ class StandardServer extends Server {
 					if (listener2 != null) {
 						con.addListener(listener2);
 					}
+					con.addListener(new EventReporter());
 					con.start();
 					Util.sleep(10);
 				} catch (IOException e) {

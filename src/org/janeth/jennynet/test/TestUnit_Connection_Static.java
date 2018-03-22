@@ -565,7 +565,7 @@ public class TestUnit_Connection_Static {
          
          // test after closing
          assertTrue("in closed state", cl1.isClosed());
-         assertFalse("not in connected state", cl1.isConnected());
+         assertFalse("still in connected state", cl1.isConnected());
          assertFalse("not in idle state", cl1.isIdle());
          assertFalse("not in transmitting state", cl1.isTransmitting());
          assertTrue("has last-send-time", cl1.getLastSendTime() > 0);

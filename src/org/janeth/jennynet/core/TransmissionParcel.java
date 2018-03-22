@@ -32,6 +32,7 @@ class TransmissionParcel extends JennyNetByteBuffer
     * @return TransmissionParcel array 
     */
    public static TransmissionParcel[] createParcelArray (
+		 ConnectionImpl con,
          TransmissionChannel channel, 
          byte[] serObj, 
          long objectNr, 
@@ -49,7 +50,7 @@ class TransmissionParcel extends JennyNetByteBuffer
       List<TransmissionParcel> list = new ArrayList<TransmissionParcel>();
       for (int i = 0; i < nrOfParcels; i++) {
          int segmentSize = i < nrOfParcels-1 ? transmissionParcelSize : lastBit;
-         TransmissionParcel p = new TransmissionParcel(objectNr, i, 
+         TransmissionParcel p = new TransmissionParcel(con, objectNr, i, 
                serObj, i*transmissionParcelSize, segmentSize);
          p.setPriority(priority);
          list.add(p);
@@ -73,6 +74,9 @@ class TransmissionParcel extends JennyNetByteBuffer
    private int sequencelNr;
    private int crc32;
    
+   // connection ref
+   private ConnectionImpl connection;
+   
    
    /** Creates a new transmission parcel for the OBJECT channel with the 
     * given data buffer and header information. (For other channels use
@@ -85,13 +89,18 @@ class TransmissionParcel extends JennyNetByteBuffer
     * @param start int data start offset in buffer
     * @int length int data length in buffer
     */
-   public TransmissionParcel (long objectNr, 
+   public TransmissionParcel (ConnectionImpl con,
+		   					  long objectNr, 
 		   					  int parcelNr, 
 		   					  byte[] buffer, 
 		   					  int start, 
 		   					  int length) {
       super(buffer, start, length);
+	  if (con == null) 
+		  throw new NullPointerException("connection is null");
+	  
 
+      connection = con;
       objectID = objectNr;
       sequencelNr = parcelNr;
       channel = TransmissionChannel.OBJECT;
@@ -111,8 +120,8 @@ class TransmissionParcel extends JennyNetByteBuffer
     * @param parcelNr int the parcel serial number
     * @param buffer byte[] object data segment
     */
-   public TransmissionParcel (long objectNr, int parcelNr, byte[] buffer) {
-      this(objectNr, parcelNr, buffer, 0, buffer.length);
+   public TransmissionParcel (ConnectionImpl con, long objectNr, int parcelNr, byte[] buffer) {
+      this(con, objectNr, parcelNr, buffer, 0, buffer.length);
    }
    
    /** Creates a transmission parcel for a transmission signal.
@@ -123,11 +132,15 @@ class TransmissionParcel extends JennyNetByteBuffer
     * @param text signal associated text (human readable additional info
     *         e.g. a cause for issuing the signal)
     */
-   public TransmissionParcel (SignalType signal, long object, int info, String text) {
+   public TransmissionParcel (ConnectionImpl con, SignalType signal, long object, int info, String text) {
+	  if (con == null) 
+		  throw new NullPointerException("connection is null");
+	  
+	  connection = con;
       channel = TransmissionChannel.SIGNAL;
       objectID = object;
-//      sequencelNr = (info << 16) | signal.ordinal();
       sequencelNr = signal.ordinal();
+      
   	  byte[] textData = text == null ? null : text.getBytes(JennyNet.getCodingCharset());
   	  if (textData != null || info != 0) {
   	  	  int dataLen = (textData == null ? 0 : textData.length) + 4;
@@ -145,6 +158,21 @@ class TransmissionParcel extends JennyNetByteBuffer
    protected TransmissionParcel () {
    }
 
+   
+   /** Creates an empty transmission parcel of the Channel BLIND.
+    * This type of parcel is used to adjunct the given timer-tasks 
+    * for injecting it into the parcel processor. 
+    * 
+    * @param connection {@code ConnectionImpl}
+    */
+   protected TransmissionParcel (ConnectionImpl con, long object, SchedulableTimerTask task) {
+	   connection = con;
+	   objectID = object;
+	   channel = TransmissionChannel.BLIND;
+	   priority = SendPriority.Bottom;
+	   setTimerTask(task);
+   }
+
    /** Creates a parcel from an existing other parcel (identical settings).
     */
    protected TransmissionParcel (TransmissionParcel p) {
@@ -155,6 +183,7 @@ class TransmissionParcel extends JennyNetByteBuffer
       header = p.header;
       setData(p.getData());
       crc32 = p.crc32;
+      connection = p.connection;
    }
 
    /** Writes the transmit parcel data to the given output stream.
@@ -194,7 +223,7 @@ class TransmissionParcel extends JennyNetByteBuffer
       }
    }
 
-   public void readObject( InputStream socketInput ) throws IOException {
+   public void readObject(ConnectionImpl con, InputStream socketInput) throws IOException {
       DataInputStream in = new DataInputStream(socketInput);
 
       int mark = in.readInt();
@@ -203,6 +232,7 @@ class TransmissionParcel extends JennyNetByteBuffer
       }
       
       // read basic parcel information
+      connection = con;
       channel = TransmissionChannel.valueOf(in.read());
       priority = SendPriority.valueOf(in.readByte());
       objectID = in.readLong();
@@ -304,24 +334,40 @@ class TransmissionParcel extends JennyNetByteBuffer
       return crc32;
    }
    
-   public void report ( int io, PrintStream out ) {
-      out.println("++ " + (io==0 ? "REC":"SND") + "-PARCEL: obj=" + objectID + ", ser=" + sequencelNr + ", channel=" + channel);
+   public void report (int io, PrintStream out) {
+      prot("++ " + (io==0 ? "REC":"SND") + "-PARCEL: obj=" + objectID + ", ser=" + sequencelNr 
+    		  + ", channel=" + channel + ", data=" + getLength(), out);
       if (header != null) {
-         out.println("              HEAD: parcels=" + header.getNumberOfParcels() + ", size=" 
-               + header.getTransmissionSize() + ", mt=" + header.getSerialisationMethod());
+         prot("              HEAD: parcels=" + header.getNumberOfParcels() + ", size=" 
+               + header.getTransmissionSize() + ", mt=" + header.getSerialisationMethod(), out);
          if (header.getPath() != null ) {
-            out.println("              path=" + header.getPath());
+            prot("              path=" + header.getPath(), out);
          }
       }
    }
 
+   /** Prints the given protocol text to the console.
+    * 
+    * @param text String 
+    */
+   private void prot (String text, PrintStream out) {
+	   String hs = text;
+	   if (connection != null) {
+		   hs = "(" + connection.getLocalAddress().getPort() + ") " + text;
+	   }
+	   out.println(hs);
+   }
+   
 
-   public static TransmissionParcel readParcel(InputStream in) throws IOException {
+   public static TransmissionParcel readParcel(ConnectionImpl con, InputStream in) throws IOException {
       TransmissionParcel p = new TransmissionParcel();
-      p.readObject(in);
+      p.readObject(con, in);
       return p;
    }
 
+   public ConnectionImpl getConnection () {
+	   return connection;
+   }
 
    public long getObjectID() {
       return objectID;

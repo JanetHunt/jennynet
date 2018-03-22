@@ -7,15 +7,15 @@ public class Signal extends TransmissionParcel {
    private int info;
    private String text;
    
-   public Signal (SignalType s, long objectID, int info, String text) {
-      super(s, objectID, info, text);
+   public Signal (ConnectionImpl con, SignalType s, long objectID, int info, String text) {
+      super(con, s, objectID, info, text);
       this.sigType = s;
       this.info = info;
       this.text = text;
    }
 
-   public Signal (SignalType s, long objectID) {
-      this(s, objectID, 0, null);
+   public Signal (ConnectionImpl con, SignalType s, long objectID) {
+      this(con, s, objectID, 0, null);
    }
    
    /** Creates a Signal from a signal parcel.
@@ -61,48 +61,53 @@ public class Signal extends TransmissionParcel {
     * @param text String cause for the break (may be null)
     * @return
     */
-   public static Signal newBreakSignal (long objectID, int info, String text) {
-	  Signal s = new Signal(SignalType.BREAK, objectID, info, text);
+   public static Signal newBreakSignal (
+		   ConnectionImpl con, long objectID, int info, String text) {
+	  Signal s = new Signal(con, SignalType.BREAK, objectID, info, text);
 	  s.setPriority(SendPriority.High);
       return s;
    }
    
-   public static Signal newPingSignal (long pingID) {
-	  Signal s = new Signal(SignalType.PING, pingID);
+   public static Signal newPingSignal (ConnectionImpl con, long pingID) {
+	  Signal s = new Signal(con, SignalType.PING, pingID);
 	  s.setPriority(SendPriority.Top);
       return s;
    }
    
-   public static Signal newEchoSignal (long pingID) {
-	  Signal s = new Signal(SignalType.ECHO, pingID);
+   public static Signal newEchoSignal (ConnectionImpl con, long pingID) {
+	  Signal s = new Signal(con, SignalType.ECHO, pingID);
 	  s.setPriority(SendPriority.Top);
       return s;
    }
 
-   public static Signal newAliveSignal () {
-	  Signal s = new Signal(SignalType.ALIVE, 0);
+   public static Signal newAliveSignal (ConnectionImpl con) {
+	  Signal s = new Signal(con, SignalType.ALIVE, 0);
 	  s.setPriority(SendPriority.Bottom);
       return s;
    }
    
-   public static Signal newAliveEchoSignal () {
-	  Signal s = new Signal(SignalType.ALIVE_ECHO, 0);
+   public static Signal newAliveEchoSignal (ConnectionImpl con) {
+	  Signal s = new Signal(con, SignalType.ALIVE_ECHO, 0);
 	  s.setPriority(SendPriority.Bottom);
       return s;
    }
    
-   public static Signal newTempoSignal (int baud) {
-	  Signal s = new Signal(SignalType.TEMPO, 0, baud, null);
+   public static Signal newTempoSignal (ConnectionImpl con, int baud) {
+	  Signal s = new Signal(con, SignalType.TEMPO, 0, baud, null);
 	  s.setPriority(SendPriority.Low);
       return s;
    }
    
-   public static Signal newConfirmSignal (long objectID) {
-      return new Signal(SignalType.CONFIRM, objectID);
+   public static Signal newConfirmSignal (ConnectionImpl con, long objectID) {
+      return new Signal(con, SignalType.CONFIRM, objectID);
    }
    
-   public static Signal newFailSignal (long objectID, int info, String text) {
-      return new Signal(SignalType.FAIL, objectID, info, text);
+   public static Signal newCloseRequestSignal (ConnectionImpl con, int info, String msg) {
+      return new Signal(con, SignalType.CLOSE, 0, info, msg);
+   }
+	   
+   public static Signal newFailSignal (ConnectionImpl con, long objectID, int info, String text) {
+      return new Signal(con, SignalType.FAIL, objectID, info, text);
    }
    
 

@@ -11,10 +11,13 @@ import java.util.List;
 
 import org.janeth.jennynet.core.Client;
 import org.janeth.jennynet.core.DefaultConnectionListener;
+import org.janeth.jennynet.core.JennyNet;
 import org.janeth.jennynet.core.JennyNetByteBuffer;
 import org.janeth.jennynet.core.SendPriority;
 import org.janeth.jennynet.core.Server;
 import org.janeth.jennynet.intfa.Connection;
+import org.janeth.jennynet.intfa.ConnectionListener;
+import org.janeth.jennynet.intfa.ConnectionParameters;
 import org.janeth.jennynet.intfa.ServerConnection;
 import org.janeth.jennynet.util.CRC32;
 import org.janeth.jennynet.util.Util;
@@ -42,13 +45,14 @@ public class TestUnit_Object_Transmission {
 		}
 		
 		@Override
-		public void objectReceived(Connection con, long objNr, Object obj) {
+		public synchronized void objectReceived(Connection con, long objNr, Object obj) {
 			if (obj instanceof JennyNetByteBuffer) {
 				received.add(((JennyNetByteBuffer)obj).getData());
 				
-				if (received.size() == unlockThreshold)
-				synchronized(lock) {
-					lock.notify();
+				if (received.size() == unlockThreshold) {
+					synchronized(lock) {
+						lock.notify();
+					}
 				}
 			}
 		}
@@ -62,8 +66,22 @@ public class TestUnit_Object_Transmission {
 //			unlockThreshold = unlockSize;
 //		}
 
-		public void reset () {
+		public synchronized void reset () {
 			received.clear();
+		}
+		
+		/** Whether one of the contains data blocks renders the given CRC32
+		 *  value.
+		 *  
+		 * @param crc int search CRC
+		 * @return boolean true == crc contained
+		 */
+		public synchronized boolean containsBlockCrc (int crc) {
+			for (byte[] blk : received) {
+				if (Util.CRC32_of(blk) == crc)
+					return true;
+			}
+			return false;
 		}
 	}
 		
@@ -96,7 +114,7 @@ public class TestUnit_Object_Transmission {
 			int dataLen = 100000;
 			byte[] block = Util.randBytes(dataLen);
 			cl.setTempo(5000);
-			assertTrue("error is TEMPO setting", cl.getTransmissionSpeed() == 5000);
+			assertTrue("error in TEMPO setting", cl.getTransmissionSpeed() == 5000);
 			
 			// send over connection
 			long time = System.currentTimeMillis();
@@ -294,6 +312,69 @@ public class TestUnit_Object_Transmission {
 		
 	}
 
+	@Test
+	public void simple_unrestricted_transfer () throws IOException, InterruptedException {
+		
+		final Object lock = new Object();
+		final ObjectReceptionListener receptionListener = new ObjectReceptionListener(lock, 1);
+		ConnectionListener eventReporter = new EventReporter();
+		Server sv = null;
+		Client cl = null;
+	
+		try {
+			sv = new StandardServer(new InetSocketAddress("localhost", 3000), receptionListener);
+			sv.getParameters().setAlivePeriod(0);
+			sv.start();
+			
+			// set up a running connection
+			cl = new Client();
+			cl.getParameters().setAlivePeriod(0);
+			cl.getParameters().setTransmissionParcelSize(8*1024);
+			cl.addListener(eventReporter);
+			cl.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl.toString());
+			Util.sleep(20);
+			
+			synchronized (lock) {
+				
+				// CASE 1
+				// prepare random data block to transmit
+				int dataLen = 100000;
+				byte[] block = Util.randBytes(dataLen);
+				
+				// send over connection and close it immediately
+				long time = System.currentTimeMillis();
+				cl.sendData(block, 0, dataLen, SendPriority.Normal);
+				cl.close();
+				lock.wait();
+				int elapsed = (int)(System.currentTimeMillis() - time);
+				
+				// check received data
+				assertFalse("no object received by server", receptionListener.getReceived().isEmpty());
+				byte[] rece = receptionListener.getReceived().get(0);
+				assertTrue("data integrity error (transmitted 1)", Util.equalArrays(block, rece));
+				System.out.println("-- transmission 1 verified, time elapsed " + elapsed + " ms");
+				assertTrue("transmission time too long (limit 160, was " + elapsed, elapsed <= 160);
+				
+				System.out.println("\r\n## pausing ...");
+				Util.sleep(10000);
+			}
+			
+			// shutdown net systems
+		} finally {
+			System.out.println("------------------------------------------------------------------ ");
+			System.out.println("--- System Memory : " + Runtime.getRuntime().freeMemory() + " / " 
+					+ Runtime.getRuntime().totalMemory());
+			if (sv != null) {
+				sv.closeAllConnections();
+				sv.close();
+				Util.sleep(10);
+			}
+			if (cl != null) {
+				cl.close();
+			}
+		}
+	}
 
 	@Test
 	public void tempo_receiving_single_object () throws IOException, InterruptedException {
@@ -311,7 +392,6 @@ public class TestUnit_Object_Transmission {
 		// set up a running connection
 		cl = new Client();
 		cl.getParameters().setAlivePeriod(5000);
-		cl.getParameters().setTransmissionParcelSize(8*1024);
 		cl.addListener(receptionListener);
 		cl.connect(100, sv.getSocketAddress());
 		System.out.println("-- connection established " + cl.toString());
@@ -320,9 +400,11 @@ public class TestUnit_Object_Transmission {
 		synchronized (lock) {
 			
 			Connection scon = sv.getConnections()[0];
+			scon.getParameters().setTransmissionParcelSize(8*1024);
 
 			// CASE 1
 			// prepare random data block to transmit
+			System.out.println("----- CASE 1 : 100,000 block, TEMPO 5,000");
 			int dataLen = 100000;
 			byte[] block = Util.randBytes(dataLen);
 			cl.setTempo(5000);
@@ -342,10 +424,11 @@ public class TestUnit_Object_Transmission {
 			
 			// CASE 2
 			// prepare random data block to transmit
+			System.out.println("\n----- CASE 2 : 500,000 block, TEMPO 33,000");
 			dataLen = 500000;
 			block = Util.randBytes(dataLen);
 			cl.setTempo(33000);
-			cl.getParameters().setTransmissionParcelSize(16*1024);
+			scon.getParameters().setTransmissionParcelSize(16*1024);
 			receptionListener.reset();
 			
 			// send over connection
@@ -362,10 +445,11 @@ public class TestUnit_Object_Transmission {
 	
 			// CASE 3
 			// prepare random data block to transmit
+			System.out.println("\n----- CASE 3 : 1,000,000 block, TEMPO 100,000");
 			dataLen = 1000000;
 			block = Util.randBytes(dataLen);
 			cl.setTempo(100000);
-			cl.getParameters().setTransmissionParcelSize(20*1024);
+			scon.getParameters().setTransmissionParcelSize(20*1024);
 			receptionListener.reset();
 			
 			// send over connection
@@ -382,10 +466,11 @@ public class TestUnit_Object_Transmission {
 	
 			// CASE 4
 			// prepare random data block to transmit
+			System.out.println("\n----- CASE 4 : 1,000,000 block, TEMPO 1,000,000");
 			dataLen = 1000000;
 			block = Util.randBytes(dataLen);
 			cl.setTempo(1000000);
-			cl.getParameters().setTransmissionParcelSize(32*1024);
+			scon.getParameters().setTransmissionParcelSize(32*1024);
 			receptionListener.reset();
 			
 			// send over connection
@@ -617,7 +702,7 @@ public class TestUnit_Object_Transmission {
 			}
 			
 			@Override
-			public void objectReceived(Connection con, long objNr, Object obj) {
+			public void objectReceived (Connection con, long objNr, Object obj) {
 				received.add(obj);
 				
 				if (received.size() == unlockThreshold)
@@ -775,6 +860,7 @@ public class TestUnit_Object_Transmission {
 			cl = new Client();
 			cl.getParameters().setAlivePeriod(5000);
 			cl.getParameters().setMaxSerialisationSize(1000);
+			cl.addListener(new EventReporter());
 			cl.connect(100, sv.getSocketAddress());
 			System.out.println("-- connection established " + cl.toString());
 			Util.sleep(50);
@@ -783,7 +869,7 @@ public class TestUnit_Object_Transmission {
 			int speed = 20000;
 			scon.setTempo(speed);
 			scon.getParameters().setMaxSerialisationSize(2000);
-			Util.sleep(10);
+			Util.sleep(50);
 
 			// prepare random data block to transmit
 			int dataLen = 100000;
@@ -804,6 +890,7 @@ public class TestUnit_Object_Transmission {
 			
 		// shutdown net systems
 		} finally {
+			System.out.println("## ENTERING FINALLY SECTION");
 			if (sv != null) {
 				sv.closeAllConnections();
 				sv.close();
@@ -811,6 +898,104 @@ public class TestUnit_Object_Transmission {
 			}
 			if (cl != null) {
 				cl.close();
+			}
+		}
+	}
+
+
+	@Test
+	public void multi_client_unrestricted_transfer () throws IOException, InterruptedException {
+		
+		final Object lock = new Object();
+		final ObjectReceptionListener receptionListener = new ObjectReceptionListener(lock, 3);
+		ConnectionListener eventReporter = new EventReporter();
+		Server sv = null;
+		Client cl1 = null, cl2 = null, cl3 = null;
+		int crc1, crc2, crc3;
+	
+		try {
+			sv = new StandardServer(new InetSocketAddress("localhost", 3000), receptionListener);
+			sv.getParameters().setAlivePeriod(0);
+			sv.start();
+			
+			JennyNet.setAlivePeriod(0);
+			JennyNet.setTransmissionParcelSize(8*1024);
+			
+			// set up a running connection
+			cl1 = new Client();
+			cl1.addListener(eventReporter);
+			cl1.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl1.toString());
+			
+			cl2 = new Client();
+			cl2.addListener(eventReporter);
+			cl2.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl2.toString());
+			
+			cl3 = new Client();
+			cl3.addListener(eventReporter);
+			cl3.connect(100, sv.getSocketAddress());
+			System.out.println("-- connection established " + cl3.toString());
+			
+			
+			Util.sleep(20);
+			
+			synchronized (lock) {
+				
+				// CASE 1
+				// prepare random data block to transmit
+				int dataLen = 100000;
+				byte[] block1 = Util.randBytes(dataLen);
+				crc1 = Util.CRC32_of(block1);
+				byte[] block2 = Util.randBytes(dataLen);
+				crc2 = Util.CRC32_of(block2);
+				byte[] block3 = Util.randBytes(dataLen);
+				crc3 = Util.CRC32_of(block3);
+				
+				// send over connection and close it immediately
+				long time = System.currentTimeMillis();
+				cl1.sendData(block1, 0, dataLen, SendPriority.Normal);
+				cl2.sendData(block2, 0, dataLen, SendPriority.Normal);
+				cl3.sendData(block3, 0, dataLen, SendPriority.Normal);
+				cl1.close();
+				cl2.close();
+				cl3.close();
+				lock.wait();
+				int elapsed = (int)(System.currentTimeMillis() - time);
+				
+				// check received data
+				List<byte[]> recList = receptionListener.getReceived();
+				assertFalse("no object received by server", recList.isEmpty());
+				assertTrue("false received list size: " + recList.size(), recList.size() == 3);
+
+				assertTrue("data integrity error (transmit cl-1)", receptionListener.containsBlockCrc(crc1));
+				assertTrue("data integrity error (transmit cl-2)", receptionListener.containsBlockCrc(crc2));
+				assertTrue("data integrity error (transmit cl-3)", receptionListener.containsBlockCrc(crc3));
+				System.out.println("-- 3 transmissions verified, time elapsed " + elapsed + " ms");
+				assertTrue("transmission time too long (limit 160, was " + elapsed, elapsed <= 300);
+				
+				System.out.println("\r\n## pausing ...");
+				Util.sleep(10000);
+			}
+			
+			// shutdown net systems
+		} finally {
+			System.out.println("------------------------------------------------------------------ ");
+			System.out.println("--- System Memory : " + Runtime.getRuntime().freeMemory() + " / " 
+					+ Runtime.getRuntime().totalMemory());
+			if (sv != null) {
+				sv.closeAllConnections();
+				sv.close();
+				Util.sleep(10);
+			}
+			if (cl1 != null) {
+				cl1.close();
+			}
+			if (cl2 != null) {
+				cl2.close();
+			}
+			if (cl3 != null) {
+				cl3.close();
 			}
 		}
 	}

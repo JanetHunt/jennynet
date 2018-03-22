@@ -294,8 +294,8 @@ public void test_multi_send_ping () {
       for (FakeConnection fc : conArr) {
          assertTrue("missing send_object execution in connection", 
                fc.getCounterValue(Action.PING) == 1);
-         assertTrue("missing or incorrect TEMPO value transmission", 
-               ((Signal)fc.getLastSendObject()).getSigType() == SignalType.PING); 
+         assertTrue("missing or incorrect PING transmission", 
+        	   fc.getLastSendObject() instanceof FakeConnection.PingObject); 
       }
       
       // test error reporting (single error)
@@ -326,7 +326,7 @@ public void test_multi_send_ping () {
             assertTrue("missing send_object execution in connection", 
                fc.getCounterValue(Action.PING) == 1);
             assertTrue("missing or incorrect object transmission", 
-               ((Signal)fc.getLastSendObject()).getSigType() == SignalType.PING); 
+               fc.getLastSendObject() instanceof FakeConnection.PingObject); 
          }
       }
       

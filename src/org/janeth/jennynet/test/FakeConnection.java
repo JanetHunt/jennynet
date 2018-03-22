@@ -36,6 +36,13 @@ public class FakeConnection implements Connection {
    private int nextObjectNumber;
    private int nextPingNumber;
    
+   public class PingObject {
+	   long pingNr;
+	   public PingObject (long id) {
+		   pingNr = id;
+	   }
+   }
+   
    public FakeConnection () {
    }
    
@@ -175,7 +182,8 @@ public class FakeConnection implements Connection {
 
    @Override
    public long sendPing () {
-      sendObject(Signal.newPingSignal(++nextPingNumber));
+//      sendObject(Signal.newPingSignal(++nextPingNumber));
+      sendObject(new PingObject(++nextPingNumber));
       counter[Action.PING.ordinal()]++;
       return nextPingNumber;
    }
@@ -252,6 +260,11 @@ public class FakeConnection implements Connection {
 	@Override
 	public int getTransmissionSpeed() {
 		return -1;
+	}
+
+	@Override
+	public long getCurrentSendLoad() {
+		return 0;
 	}
 
 }

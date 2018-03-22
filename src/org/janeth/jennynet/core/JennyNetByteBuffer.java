@@ -12,7 +12,7 @@ import org.janeth.jennynet.util.CRC32;
  */
 public class JennyNetByteBuffer {
    protected byte[] data;
-   protected int crc32;
+   protected transient int crc32;
    
    /** Creates a new byte buffer class from a section of a given 
     * data buffer.
@@ -63,9 +63,9 @@ public class JennyNetByteBuffer {
       return data == null ? 0 : data.length;
    }
    
-   /** Returns a CRC64 value for the contained buffer data.
+   /** Returns a CRC32 value for the contained buffer data.
     * 
-    * @return long CRC64 value
+    * @return long CRC32 value
     */
    public int getCRC () {
       if (data == null) return 0;

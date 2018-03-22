@@ -79,6 +79,14 @@ public class ConnectionPollService {
 		}
 	
 		@Override
+		public void closed(Connection connection, int cause, String message) {
+			ConnectionEvent event = new ConnectionEvent(connection, EventType.closed,
+					cause, message);
+			ConnectionPollUnit unit = new ConnectionPollUnit(connection, event);
+			putToQueue(unit);
+		}
+
+		@Override
 		public void idle(Connection connection, boolean idle) {
 			ConnectionEvent event = new ConnectionEvent(connection, EventType.idle, idle?1:0, null);
 			ConnectionPollUnit unit = new ConnectionPollUnit(connection, event);
@@ -102,6 +110,7 @@ public class ConnectionPollService {
 			ConnectionPollUnit unit = new ConnectionPollUnit(pingEcho);
 			putToQueue(unit);
 		}
+
 	}
 
 	

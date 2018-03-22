@@ -244,8 +244,8 @@ class FileAgglomeration extends ParcelAgglomeration {
 
       // signal transfer success or failure to remote station
       // (failure prevails if a file destination could not be realised)
-      Signal signal = success ? Signal.newConfirmSignal(fileID) : 
-                      Signal.newFailSignal(fileID, 1, null);
+      Signal signal = success ? Signal.newConfirmSignal(connection, fileID) : 
+                      Signal.newFailSignal(connection, fileID, 1, null);
       connection.sendSignal(signal);
       
       // inform the user about file-received or transmission failed (event)
@@ -313,7 +313,7 @@ class FileAgglomeration extends ParcelAgglomeration {
       // if opted, signal remote about transmission break
       if (signalInfo != 0 && connection.isConnected()) {
          String text = e == null ? null : e.toString();
-         connection.sendSignal(Signal.newBreakSignal(fileID, signalInfo, text));
+         connection.sendSignal(Signal.newBreakSignal(connection, fileID, signalInfo, text));
       }
 
       if (eventInfo != 0) {

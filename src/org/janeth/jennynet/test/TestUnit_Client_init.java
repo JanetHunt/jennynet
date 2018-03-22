@@ -216,7 +216,7 @@ public class TestUnit_Client_init {
          cli.connect(1000, "localhost", 3026);
          connected_feature_test(cli, cad, sad);
          cli.close();
-         Util.sleep(50);
+         Util.sleep(300);
          
          // should be possible: bound client connect 2
          cli = new Client(cad);
@@ -224,7 +224,7 @@ public class TestUnit_Client_init {
          cli.connect(1000, tarAdr);
          connected_feature_test(cli, cad, sad);
          cli.close();
-         Util.sleep(50);
+         Util.sleep(300);
          
          // should be possible: bound client connect 3
          cli = new Client(cad);
@@ -232,7 +232,6 @@ public class TestUnit_Client_init {
          cli.connect(1000, inetAdr, 3026);
          connected_feature_test(cli, cli.getLocalAddress(), sv.getSocketAddress());
          cli.close();
-         Util.sleep(50);
          
          sv.close();
       } catch (Exception e) {

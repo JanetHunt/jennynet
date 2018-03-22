@@ -736,7 +736,7 @@ public class TestUnit_Server_Operate {
          con1.connect(0, sv1.getSocketAddress());
          con2.connect(0, sv1.getSocketAddress());
          con3.connect(0, sv1.getSocketAddress());
-         sleep(30);
+         sleep(50);
 
          // confirm signalled connections
          assertTrue("signalled con was not actually started",
@@ -767,7 +767,7 @@ public class TestUnit_Server_Operate {
          // close connections from client side
          con1.close();
          con2.close();
-         sleep(20);
+         sleep(100);
 
          // check server connections
          assertTrue("server connections length failure",

@@ -645,6 +645,20 @@ public class TestUnit_File_Transfer {
 
 	}
 
+	/** Whether base contains data by byte values (equal-arrays).
+	 * 
+	 * @param base byte[][]
+	 * @param data byte[]
+	 * @return
+	 */
+	private boolean containsData (byte[][] base, byte[] data) {
+		for (byte[] token : base) {
+			if (Util.equalArrays(token, data)) {
+				return true;
+			}
+		}
+		return false;
+	}
 
 	@Test
 	public void client_multi_no_target () throws IOException, InterruptedException {
@@ -653,6 +667,7 @@ public class TestUnit_File_Transfer {
 		
 		final Object lock = new Object();
 		final FileReceptionListener receptionListener = new FileReceptionListener(lock, 3);
+		byte[][] results;
 
 	try {
 		System.out.println("\nTEST TRANSFER CLIENT TO SERVER: MULTI-FILE, NO TARGET");
@@ -670,7 +685,7 @@ public class TestUnit_File_Transfer {
 		Util.sleep(20);
 		
 		synchronized (lock) {
-			// CASE 1 : 50,000 data file
+			// CASE 1 : 3 x 50,000 data files, sent parallel
 			System.out.println("\nCASE 1 : multi data file 50,000 - no target, priority Normal");
 
 			// prepare data and source file
@@ -696,41 +711,19 @@ public class TestUnit_File_Transfer {
 			lock.wait(20000);
 			long time = System.currentTimeMillis() - stamp;
 			assertTrue("no / not all files received", receptionListener.getReceived().size() == 3);
+			
+			results = new byte[3][];
 
 			// control received file content
-			File file = receptionListener.getReceived().get(0);
-			byte [] rece = Util.readFile(file);
-			assertTrue("data integrity error in file-1 transmission", Util.equalArrays(rece, data1));
+			results[0] = Util.readFile(receptionListener.getReceived().get(0));
+			results[1] = Util.readFile(receptionListener.getReceived().get(1));
+			results[2] = Util.readFile(receptionListener.getReceived().get(2));
 
-			file = receptionListener.getReceived().get(1);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in file-2 transmission", Util.equalArrays(rece, data2));
-
-			file = receptionListener.getReceived().get(2);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in file-3 transmission", Util.equalArrays(rece, data3));
+			assertTrue("data integrity error in file-1 transmission", containsData(results, data1));
+			assertTrue("data integrity error in file-2 transmission", containsData(results, data2));
+			assertTrue("data integrity error in file-3 transmission", containsData(results, data3));
 			assertTrue("transmission time failure", time > 9000 & time < 12000);
 			
-//				// CASE 2 : empty data file
-//				System.out.println("\nCASE 2 : single empty file - no target");
-//				receptionListener.reset();
-//				src = Util.getTempFile();
-//				cl.sendFile(src, null);
-//				stamp = System.currentTimeMillis();
-//				
-//				// wait for completion
-//				lock.wait(10000);
-//				time = System.currentTimeMillis() - stamp;
-//				assertFalse("no file received", receptionListener.getReceived().isEmpty());
-//	
-//				// control received file
-//				file = receptionListener.getReceived().get(0);
-//				assertTrue("transmitted file should be empty but has length " + file.length(), 
-//						file.length() == 0);
-//				assertTrue("transmission time failure", time > 0 & time < 1000);
-			
-			// wait (test)
-//			Util.sleep(12000);
 		}		
 	} finally {
 		System.out.println("\n# transmission volume of Client : " + cl.getTransmissionVolume());
@@ -763,6 +756,7 @@ public class TestUnit_File_Transfer {
 				FileReceptionListener.Station.Server);
 		final FileReceptionListener clientListener = new FileReceptionListener(sendLock,
 				FileReceptionListener.Station.Client);
+		byte[][] results;
 
 	try {
 		System.out.println("\nTEST TRANSFER CLIENT/SERVER CROSS: MULTI-FILE, NO TARGET");
@@ -777,7 +771,7 @@ public class TestUnit_File_Transfer {
 		cl.getParameters().setTransmissionParcelSize(8*1024);
 		cl.addListener(clientListener);
 		cl.connect(100, sv.getSocketAddress());
-		cl.setTempo(15000);
+		cl.setTempo(25000);
 		System.out.println("-- connection established " + cl.toString());
 		Util.sleep(20);
 		
@@ -823,37 +817,33 @@ public class TestUnit_File_Transfer {
 			lock.lock_wait(60000);
 			sendLock.lock_wait(30000);
 			long time = System.currentTimeMillis() - stamp;
+			System.err.println("--> RECEIVED FILES after wait: server=" + serverListener.getReceived().size() 
+					+ ", client=" + clientListener.getReceived().size());
+			System.out.println("--- time elapsed for all: " + time);
 			assertTrue("no / not all files received (server)", serverListener.getReceived().size() == 3);
 			assertTrue("no / not all files received (client)", clientListener.getReceived().size() == 3);
 
 			// control received file content (server received)
-			File file = serverListener.getReceived().get(0);
-			byte [] rece = Util.readFile(file);
-			assertTrue("data integrity error in client file-1 transmission", Util.equalArrays(rece, cdata1));
+			results = new byte[3][];
+			results[0] = Util.readFile(serverListener.getReceived().get(0));
+			results[1] = Util.readFile(serverListener.getReceived().get(1));
+			results[2] = Util.readFile(serverListener.getReceived().get(2));
 
-			file = serverListener.getReceived().get(1);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in client file-2 transmission", Util.equalArrays(rece, cdata2));
-
-			file = serverListener.getReceived().get(2);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in client file-3 transmission", Util.equalArrays(rece, cdata3));
-			System.out.println("--- time elapsed for all: " + time);
+			assertTrue("data integrity error in client file-1 transmission", containsData(results, cdata1));
+			assertTrue("data integrity error in client file-2 transmission", containsData(results, cdata2));
+			assertTrue("data integrity error in client file-3 transmission", containsData(results, cdata3));
 			
 			// control received file content (client received)
-			file = clientListener.getReceived().get(0);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in server file-1 transmission", Util.equalArrays(rece, sdata1));
+			results = new byte[3][];
+			results[0] = Util.readFile(clientListener.getReceived().get(0));
+			results[1] = Util.readFile(clientListener.getReceived().get(1));
+			results[2] = Util.readFile(clientListener.getReceived().get(2));
+			
+			assertTrue("data integrity error in server file-1 transmission", containsData(results, sdata1));
+			assertTrue("data integrity error in server file-2 transmission", containsData(results, sdata2));
+			assertTrue("data integrity error in server file-3 transmission", containsData(results, sdata3));
 
-			file = clientListener.getReceived().get(1);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in server file-2 transmission", Util.equalArrays(rece, sdata2));
-
-			file = clientListener.getReceived().get(2);
-			rece = Util.readFile(file);
-			assertTrue("data integrity error in server file-3 transmission", Util.equalArrays(rece, sdata3));
-			System.out.println("--- time elapsed for all: " + time);
-			assertTrue("transmission time failure", time > 18000 & time < 21000);
+			assertTrue("transmission time failure", time > 11000 & time < 13000);
 			
 	} finally {
 		System.out.println("\n# transmission volume of Client : " + cl.getTransmissionVolume());
@@ -936,9 +926,9 @@ public class TestUnit_File_Transfer {
 			System.out.println("\nCASE 1 : 2 files cross 100,000 - targets - BROKEN by receiver");
 			
 			// transmit files
+			stamp = System.currentTimeMillis();
 			cl.sendFile(src1, "client-file-1");
 			fid = scon.sendFile(src4, "server-file-1");
-			stamp = System.currentTimeMillis();
 
 			// break incoming transfer on client (causes error)
 			Util.sleep(1000);
@@ -980,9 +970,9 @@ public class TestUnit_File_Transfer {
 			sendListener.reset();
 			
 			// transmit files
+			stamp = System.currentTimeMillis();
 			fid = cl.sendFile(src2, "client-file-2");
 			scon.sendFile(src5, "server-file-2");
-			stamp = System.currentTimeMillis();
 
 			// break outgoing transfer on client (causes error)
 			Util.sleep(1000);
@@ -1145,7 +1135,7 @@ public class TestUnit_File_Transfer {
 			cl.connect(100, sv.getSocketAddress());
 			cl.setTempo(15000);
 			System.out.println("-- connection established " + cl.toString());
-			Util.sleep(20);
+			Util.sleep(50);
 			
 			// get server connection
 			scon = sv.getConnections()[0];

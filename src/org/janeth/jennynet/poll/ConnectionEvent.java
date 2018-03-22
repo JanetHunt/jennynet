@@ -11,6 +11,7 @@ public class ConnectionEvent {
 	public enum EventType {
 		connected,
 		disconnected,
+		closed,
 		idle
 	}
 	
