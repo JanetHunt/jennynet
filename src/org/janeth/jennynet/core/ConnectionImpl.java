@@ -52,12 +52,13 @@ class ConnectionImpl implements Connection {
    
    protected static boolean debug = false;
    
-   /** Internal static Timer for time-control tasks. */
-   protected static Timer timer = new Timer();
    /** Internal type marker for events dispatched to IConnectionListeners */
    protected enum ConnectionEventType {
       object, connect, idle, disconnect 
    }
+   
+   /** Internal static Timer for time-control tasks. */
+   protected static Timer timer = new Timer();
    
    // parametric
    private UUID uuid = UUID.randomUUID();
@@ -97,6 +98,7 @@ class ConnectionImpl implements Connection {
    private AliveEchoControlTask aliveTimeoutTask;
    private CheckIdleTimerTask checkIdleTask;
    private Object listenerDispatchLock = new Object();
+   private Object waitForDisconnectLock = new Object();
    private long objectSerialCounter;
    private long pingSerialCounter;
    private long exchangedDataVolume;
@@ -627,12 +629,21 @@ class ConnectionImpl implements Connection {
 	  if (!connected) return;
       try {
           if (socket != null) {
+        	 // close the network socket
              connected = false;
              socket.close();
-             
+
+             // issue event to listeners
              String message = error == null ? null : error.message;
              int info = error == null ? 0 : error.info;
              fireConnectionEvent(ConnectionEventType.disconnect, info, message);
+             
+             // release any waiting threads
+             synchronized (waitForDisconnectLock) {
+            	 waitForDisconnectLock.notifyAll();
+             }
+             
+             // report
              if (debug) {
 	             System.out.println("----- Connection Closed ----- " + getLocalAddress() + "  --->  " 
 	                   + getRemoteAddress() );
@@ -875,6 +886,29 @@ class ConnectionImpl implements Connection {
       return socket;
    }
    
+	@Override
+	public void waitForDisconnect (long time) throws InterruptedException {
+		synchronized (waitForDisconnectLock) {
+			if (connected) {
+				long mark = System.currentTimeMillis();
+				waitForDisconnectLock.wait(time);
+				
+				// perform hard closure if time exceeded
+				long elapsed = System.currentTimeMillis() - mark;
+				if (time > 0 && elapsed >= time) {
+					ErrorObject error = new ErrorObject(8, "connection shutdown timeout");
+					closeSocket(error);
+				}
+			}
+		}
+	}
+
+	@Override
+	public void closeHard () {
+		ErrorObject error = new ErrorObject(9, "connection closed hardly");
+		closeSocket(error);
+	}
+	
 // --------------- inner classes ----------------   
    
    /** This thread performs serialisation of user input objects and puts them
@@ -2246,5 +2280,4 @@ class ConnectionImpl implements Connection {
 	      }
 	   }
 
-      
 }

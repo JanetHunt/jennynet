@@ -7,7 +7,9 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
-import java.util.UUID;
+import java.util.Collections;
+import java.util.List;
+import java.util.Vector;
 
 import org.janeth.jennynet.exception.ClosedConnectionException;
 import org.janeth.jennynet.exception.ConnectionTimeoutException;
@@ -24,7 +26,7 @@ import org.janeth.jennynet.intfa.IClient;
  */
 public class Client extends ConnectionImpl implements IClient {
 
-   private Socket socket = new Socket();
+	private Socket socket = new Socket();
 
 
    /** Creates an unbound client. When connecting an unbound client, an ephemeral
@@ -40,7 +42,8 @@ public class Client extends ConnectionImpl implements IClient {
     * @throws IOException if binding to the specified port is not possible
     */
    public Client (int port) throws IOException {
-      bind(port);
+	   this();
+       bind(port);
    }
    
    /** Creates a client with the given socket address. An address of null 
@@ -51,6 +54,7 @@ public class Client extends ConnectionImpl implements IClient {
     * @throws IOException
     */
    public Client (SocketAddress address) throws IOException {
+      this();
       if (address == null) {
          address = new InetSocketAddress(0);
       }
@@ -58,9 +62,18 @@ public class Client extends ConnectionImpl implements IClient {
    }
    
    @Override
+   protected void close (Throwable ex, int info) {
+	   super.close(ex, info);
+	   JennyNet.removeClientFromGlobalSet(this);
+	   System.out.println("-- removed CLIENT from global client set (" + 
+			   JennyNet.getNrOfClients() + ") : " + getLocalAddress());
+   }
+
+   @Override
    public void bind (int port) throws IOException {
       bind( new InetSocketAddress(port) );
    }
+
 
    @Override
    public void bind (SocketAddress address) throws IOException {
@@ -102,7 +115,13 @@ public class Client extends ConnectionImpl implements IClient {
       start(socket);
       setAlivePeriod(getParameters().getAlivePeriod());
       
+      // increase global active client counter
+	  JennyNet.addClientToGlobalSet(this);
+	  System.out.println("-- created NEW CLIENT, added to global client set (" + 
+			   JennyNet.getNrOfClients() + ") : " + getLocalAddress());
+	   
       // dispatch CONNECTED event
+      connected();
       fireConnectionEvent(ConnectionEventType.connect, 0, null);
    }
    
@@ -127,6 +146,12 @@ public class Client extends ConnectionImpl implements IClient {
 //    if (addr.isUnresolved()) {
 //    throw new UnresolvedAddressException();
 // }
+   }
+
+   /** Method called internally when this client enters into 'connected' state.
+    * The method of this class does nothing.
+    */
+   protected void connected () {
    }
    
    @Override

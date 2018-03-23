@@ -8,15 +8,21 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.Charset;
 import java.nio.charset.UnsupportedCharsetException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.Vector;
 
 import org.janeth.jennynet.exception.ConnectionRejectedException;
 import org.janeth.jennynet.exception.ConnectionTimeoutException;
 import org.janeth.jennynet.exception.JennyNetHandshakeException;
 import org.janeth.jennynet.intfa.Connection;
 import org.janeth.jennynet.intfa.ConnectionParameters;
+import org.janeth.jennynet.intfa.IClient;
+import org.janeth.jennynet.intfa.IServer;
 import org.janeth.jennynet.intfa.Serialization;
 import org.janeth.jennynet.util.Util;
 
@@ -28,10 +34,12 @@ public class JennyNet {
 
    protected static boolean debug = false;
 
+   // markers for version 0.3.0
    public static final int PARCEL_MARKER = 0xe40dd5a8;
-   static final byte[] LAYER_HANDSHAKE_SERVER = Util.hexToBytes("83BFAA19D69E9976D845D09684D2CAEC");
-   static final byte[] LAYER_HANDSHAKE_CLIENT = Util.hexToBytes("83BFAA19D69E9976D845D09684D280D5");
+   static final byte[] LAYER_HANDSHAKE_SERVER = Util.hexToBytes("83BFAA19D69E9976D845D09684D2CAED");
+   static final byte[] LAYER_HANDSHAKE_CLIENT = Util.hexToBytes("83BFAA19D69E9976D845D09684D280D6");
    static final byte[] CONNECTION_CONFIRM = Util.hexToBytes("D6BC4AA0EF3CE5A01515BAC1B80EA38F");
+   
    /** Buffer size for file IO streams. */
    public static final int STREAM_BUFFER_SIZE = 64000;
    public static final int DEFAULT_QUEUE_CAPACITY = 200;
@@ -50,6 +58,9 @@ public class JennyNet {
    public static final int DEFAULT_IDLE_CHECK_PERIOD = 60000; 
    public static final int DEFAULT_TRANSMISSION_TEMPO = -1; 
    
+   // global structures
+   private static Vector<IClient> globalClientList = new Vector<>(16, 32);
+   private static Vector<IServer> globalServerList = new Vector<>(16, 32);
    private static Serialization globalSerialisation = new KryoSerialisation();
    private static Charset defaultCodingCharset;
 
@@ -70,6 +81,41 @@ public class JennyNet {
       defaultInitSerialisation(globalSerialisation);
    }
    
+   /** Shuts down the JennyNet network layer with all communicating 
+    * elements and waits for the given amount of time until 
+    * connections terminate naturally.
+    * 
+    * @param time long maximum wait time; 0 for unlimited
+    * @throws InterruptedException 
+    * @throws IllegalStateException if the calling thread is
+    *         initially in interrupted state
+    */
+   public static void shutdownAndWait (long time) throws InterruptedException {
+	   if (Thread.currentThread().isInterrupted()) 
+		   throw new IllegalStateException("illegal thread state: interrupted");
+
+	   // close all clients
+	   List<IClient> clients = getGlobalClientSet();
+	   for (IClient cl : clients) {
+		   cl.close();
+	   }
+
+	   // wait for shutdown of clients
+	   for (IClient cl : clients) {
+		   cl.waitForDisconnect(time);
+	   }
+	   
+	   // close connections of all servers
+	   List<IServer> servers = getGlobalServerSet();
+	   for (IServer sv : servers) {
+		   sv.closeAllConnections();
+	   }
+
+	   // shut down servers by waiting for termination on each
+	   for (IServer sv : servers) {
+		   sv.closeAndWait(time);
+	   }
+   }
    
    /** Sets thread priority (BASE_THREAD_PRIORITY) of the service threads
     * involved in data processing of the top layer of this network package. 
@@ -464,6 +510,78 @@ public class JennyNet {
       return (ConnectionParameters)parameters.clone();
    }
 
+   /** Returns an unmodifiable list of currently active servers
+    * in the JennyNet layer.
+    * 
+    * @return <code>List&lt;IServer&gt;</code>
+    */
+   public static List<IServer> getGlobalServerSet () {
+	   return new ArrayList<IServer>(globalServerList);
+   }
+   
+   /** Returns the number of currently active servers in the JennyNet layer.
+    * 
+    * @return int number of active servers
+    */
+   public static int getNrOfServers () {
+	   return globalServerList.size();
+   }
+   
+   /** Adds a server to the layer's global server set. Double entry of 
+    * the same object is silently prevented.
+    *  
+    * @param server <code>IServer</code>
+    */
+   protected static void addServerToGlobalSet (IServer server) {
+	   if (!globalServerList.contains(server)) {
+		   globalServerList.add(server);
+	   }
+   }
+
+   /** Removes a server from the global server set.
+    * 
+    * @param server <code>IServer</code>
+    */
+   protected static void removeServerFromGlobalSet (IServer server) {
+	   globalServerList.remove(server);
+   }
+   
+   /** Returns an unmodifiable list of currently active clients
+    * in the JennyNet layer.
+    * 
+    * @return <code>List&lt;IClient&gt;</code>
+    */
+   public static List<IClient> getGlobalClientSet () {
+	   return new ArrayList<IClient>(globalClientList);
+   }
+   
+   /** Returns the number of currently active clients in the JennyNet layer.
+    * 
+    * @return int number of active clients
+    */
+   public static int getNrOfClients () {
+	   return globalClientList.size();
+   }
+   
+   /** Adds a client to the layer's global client set. Double entry of 
+    * the same object is silently prevented.
+    *  
+    * @param client <code>IClient</code>
+    */
+   protected static void addClientToGlobalSet (IClient client) {
+	   if (!globalClientList.contains(client)) {
+		   globalClientList.add(client);
+	   }
+   }
+
+   /** Removes a client from the global client set.
+    * 
+    * @param client <code>IClient</code>
+    */
+   protected static void removeClientFromGlobalSet (IClient client) {
+	   globalClientList.remove(client);
+   }
+   
    /** Waits the given time for a CONNECTION_VERIFIED signal received from the
     * remote endpoint. This should only take place after <i>verifyNetworkLayer()</i> has been
     * passed positively. Method throws exceptions to indicate various failure conditions.

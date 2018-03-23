@@ -11,7 +11,6 @@ import java.util.List;
 
 import org.janeth.jennynet.core.Client;
 import org.janeth.jennynet.core.DefaultConnectionListener;
-import org.janeth.jennynet.core.JennyNetByteBuffer;
 import org.janeth.jennynet.core.SendPriority;
 import org.janeth.jennynet.core.Server;
 import org.janeth.jennynet.intfa.Connection;
@@ -25,49 +24,6 @@ public class TestUnit_Object_Transmission {
 	public TestUnit_Object_Transmission() {
 	}
 
-	/** A <code>ConnectionListener</code> to receive 
-	 * <code>JennyNetByteBuffer</code> and return them via an output method
-	 * as list of byte arrays. There is a lock as parameter which gets 
-	 * notified with each reception event.
-	 */
-	private class ObjectReceptionListener extends DefaultConnectionListener {
-
-		private List<byte[]> received = new ArrayList<byte[]>();
-		private Object lock;
-		private int unlockThreshold;
-
-		public ObjectReceptionListener (Object lock, int unlockSize) {
-			this.lock = lock;
-			unlockThreshold = unlockSize;
-		}
-		
-		@Override
-		public void objectReceived(Connection con, long objNr, Object obj) {
-			if (obj instanceof JennyNetByteBuffer) {
-				received.add(((JennyNetByteBuffer)obj).getData());
-				
-				if (received.size() == unlockThreshold)
-				synchronized(lock) {
-					lock.notify();
-				}
-			}
-		}
-		
-		public List<byte[]> getReceived () {
-			return received;
-		}
-		
-//		public void reset (int unlockSize) {
-//			received.clear();
-//			unlockThreshold = unlockSize;
-//		}
-
-		public void reset () {
-			received.clear();
-		}
-	}
-		
-	
 	@Test
 	public void tempo_sending_single_object () throws IOException, InterruptedException {
 		Server sv = null;

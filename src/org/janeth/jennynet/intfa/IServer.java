@@ -254,6 +254,20 @@ public interface IServer {
     */
    public void closeAllConnections ();
    
+   /** Closes this server and all registered connections. Waits until all 
+    * connections are disconnected.
+    * This method returns when there are no more connections in CONNECTED
+    * state in the registry or when the calling thread is interrupted.
+    * <p>A time argument can be given; any connection still connected
+    * after this time will be hard shut down (socket closure with error
+    * code). 
+    *
+    * @param time long time to wait for disconnection (milliseconds),
+    * 				 0 for unlimited
+    * @throws InterruptedException
+    */
+   public void closeAndWait (long time) throws InterruptedException;
+   
    /** Sends an object to all connected clients with "Normal" (medium) 
     * send priority.
     * 

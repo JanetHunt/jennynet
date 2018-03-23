@@ -126,6 +126,9 @@ public class Server implements IServer {
       if (address != null) {
          bind(address);
       }
+
+      // add server to global set
+      JennyNet.addServerToGlobalSet(this);
    }
    
    @Override
@@ -180,6 +183,9 @@ public class Server implements IServer {
       // mark instance closed
       closed = true;
 
+      // remove server from global set
+      JennyNet.removeServerFromGlobalSet(this);
+      
       // close the socket if server is not started 
       // (important step! this unbinds the port resource from the socket)
       if (acceptThread == null) {
@@ -242,6 +248,18 @@ public class Server implements IServer {
             e.printStackTrace();
          }
       }
+   }
+
+   @Override
+   public void closeAndWait (long time) throws InterruptedException {
+	   close();
+	   closeAllConnections();
+	   long mark = System.currentTimeMillis();
+       for (Connection con : getConnections()) {
+    	   long diff = System.currentTimeMillis() - mark;
+    	   long arg = time == 0 ? 0 : Math.max(10, time - diff);
+   		   con.waitForDisconnect(arg);
+       }
    }
 
    @Override

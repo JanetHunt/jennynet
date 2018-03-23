@@ -303,6 +303,34 @@ public interface Connection {
     */
    public void close();
 
+//   /** Closes this connection. This causes an event to connection listeners
+//    * and the closing of this connection on the remote station. Optionally
+//    * a text on the reason of closure can be transmitted and is
+//    * indicated in related interface events.
+//    * 
+//    * @param reason String optional text, may be null
+//    */
+//   public void close (String reason);
+//
+
+   /** Closes this connection immediately by closing the network socket.
+    * If not necessitated by an emergency, the regular {@code close()} 
+    * method should be preferred. Loss of data being sent may occur. 
+    */
+   public void closeHard ();
+
+   /** Waits until this connection receives regular socket closure or an 
+    * optional time limit has passed. This method returns after a 
+    * DISCONNECTED event has been issued for connection listeners
+    * or when the thread is interrupted. If time limit was exceeded while
+    * connected, a hard closure of the socket with an error code is performed.
+    * 
+    * @param time long time to wait for disconnection (milliseconds), 
+    * 				0 for unlimited
+    * @throws InterruptedException
+    */
+   public void waitForDisconnect (long time) throws InterruptedException;
+   
    /** Adds a listener to communication events of this connection. 
     * If the listener already exists, it is not added again.
     * <p><small>Hint: JennyNet offers the no-operation <code>

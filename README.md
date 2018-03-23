@@ -11,6 +11,11 @@ Status: Alpha Results
 
 -----------------
 
+23.03.2018  working commit:  
+	Added a global client and a global server list in JennyNet for active elements.  
+	Added close-and-wait functionality for connections and servers and a global  
+	method for layer shutdown. (close-and-wait not fully functional)
+
 21.03.2018  working commit: updated serialisation libraries to Kryo 4.0.1;  
             object instantiation supplemented for all classes which implement  
             the "Serializable" interface.

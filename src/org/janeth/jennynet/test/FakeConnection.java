@@ -195,6 +195,11 @@ public class FakeConnection implements Connection {
       closed = true;
    }
 
+	@Override
+	public void closeHard() {
+		close();
+	}
+
    @Override
    public void addListener (ConnectionListener listener) {
    }
@@ -252,6 +257,10 @@ public class FakeConnection implements Connection {
 	@Override
 	public int getTransmissionSpeed() {
 		return -1;
+	}
+
+	@Override
+	public void waitForDisconnect(long time) throws InterruptedException {
 	}
 
 }
